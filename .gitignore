@@ -1,0 +1,35 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*.spec
+
+# ── 虚拟环境 ──
+.venv/
+venv/
+env/
+
+# ── IDE ──
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── 用户数据（数据库、向量库、日志、配置） ──
+user_data/
+
+# ── 环境变量 / 密钥 ──
+.env
+.env.local
+
+# ── 系统 ──
+.DS_Store
+Thumbs.db
+*.log
+
+# ── PyInstaller ──
+*.manifest
+*.toc

@@ -1,0 +1,8 @@
+Requirement already satisfied: onnxruntime in d:\homeworks\python\self-add\.venv\lib\site-packages (1.28.0)
+Requirement already satisfied: flatbuffers in d:\homeworks\python\self-add\.venv\lib\site-packages (from onnxruntime) (25.12.19)
+Requirement already satisfied: numpy>=1.21.6 in d:\homeworks\python\self-add\.venv\lib\site-packages (from onnxruntime) (2.5.2)
+Requirement already satisfied: packaging in d:\homeworks\python\self-add\.venv\lib\site-packages (from onnxruntime) (26.3)
+Requirement already satisfied: protobuf>=4.25.8 in d:\homeworks\python\self-add\.venv\lib\site-packages (from onnxruntime) (7.35.1)
+
+[notice] A new release of pip is available: 25.2 -> 26.2.1
+[notice] To update, run: D:\homeworks\python\self-add\.venv\Scripts\python.exe -m pip install --upgrade pip

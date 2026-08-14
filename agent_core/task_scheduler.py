@@ -1,0 +1,140 @@
+"""任务调度：串联 parser → builder → graph.execute，含演化打分。"""
+import logging
+import time
+from typing import Any
+
+from agent_core.task_parser import parse, detect_task_type
+from agent_core.graph_builder import build_graph
+from evolution_core.judge_score import score_work, score_life, combined_score
+from memory_store.sqlite_db import get_conn, now_str
+from config.app_const import TaskStatus
+
+logger = logging.getLogger(__name__)
+
+
+def run(task_text: str) -> dict[str, Any]:
+    """执行完整任务链路，返回结果字典。"""
+    result: dict[str, Any] = {
+        "task_text": task_text,
+        "steps": [],
+        "status": TaskStatus.RUNNING.value,
+        "logs": [],
+        "cost_time": 0,
+        "work_score": 0,
+        "life_score": 0,
+    }
+
+    # 1. 拆解
+    steps = parse(task_text)
+    result["steps"] = [{"index": s.index, "name": s.name, "desc": s.description, "type": s.step_type} for s in steps]
+    result["logs"].append(f"拆解为 {len(steps)} 个步骤")
+    task_type = detect_task_type(task_text)
+
+    # 2. 建图
+    graph = build_graph(steps)
+    if graph is None:
+        result["status"] = TaskStatus.FAIL.value
+        result["logs"].append("图构建失败（LangGraph 未就绪）")
+        return result
+
+    # 3. 执行（带超时保护）
+    start = time.time()
+    max_exec_time = 120  # 单次任务最长 120 秒
+    try:
+        init_state = {
+            "task_text": task_text,
+            "logs": [],
+            "completed_steps": [],
+            "step_results": [],
+            "cost_time": 0,
+            "current_step": -1,
+        }
+        # LangGraph 的 invoke 不支持直接 timeout，用 config 传入递归限制
+        try:
+            from langgraph.pregel import Pregel
+            config = {"recursion_limit": len(steps) * 3 + 10} if steps else {"recursion_limit": 20}
+        except ImportError:
+            config = None
+        final_state = graph.invoke(init_state, config=config) if config else graph.invoke(init_state)
+        result["logs"].extend(final_state.get("logs", []))
+        result["step_results"] = final_state.get("step_results", [])
+        result["cost_time"] = time.time() - start
+        result["status"] = TaskStatus.SUCCESS.value
+        result["logs"].append(f"执行完成，总耗时 {result['cost_time']:.2f}s")
+    except Exception as e:
+        result["status"] = TaskStatus.FAIL.value
+        result["cost_time"] = time.time() - start
+        result["logs"].append(f"执行异常: {e}")
+        logger.exception("任务执行异常")
+
+    # 4. 演化打分
+    result["work_score"] = score_work(result)
+    result["life_score"] = score_life(result)
+    result["logs"].append(f"工作评分: {result['work_score']:.1f} | 生活评分: {result['life_score']:.1f}")
+
+    # 5. 自演化闭环
+    _evolution_loop(task_text, result)
+
+    # 6. 持久化到数据库
+    _save_task(result, task_type)
+
+    return result
+
+
+def _evolution_loop(task_text: str, result: dict) -> None:
+    """自演化闭环：打分 → 流程优化 → 权重迭代 → 模板固化 → 日志记录。"""
+    try:
+        score = combined_score(
+            result["work_score"], result["life_score"],
+            result.get("task_type", "work")
+        )
+        result["combined_score"] = score
+
+        # 权重迭代
+        from evolution_core.weight_evolve import evolve_from_task
+        evolve_from_task(task_text, score)
+
+        # 流程优化（步骤 > 2 时）
+        if len(result.get("steps", [])) > 2:
+            from evolution_core.flow_optimize import optimize
+            from evolution_core.evo_log import log_flow_optimize
+            old_steps = result["steps"]
+            optimized = optimize(old_steps)
+            if len(optimized) < len(old_steps):
+                log_flow_optimize(old_steps, optimized)
+                result["logs"].append(f"流程优化: {len(old_steps)}步 → {len(optimized)}步")
+
+        # 模板固化（高频任务）
+        from evolution_core.template_save import check_and_save_template, list_templates
+        from evolution_core.evo_log import log_template_save
+        tpl = check_and_save_template(task_text, result.get("steps", []))
+        if tpl:
+            log_template_save(tpl["name"], tpl["freq"])
+            result["logs"].append(f"固化模板: {tpl['name']}")
+
+    except Exception as e:
+        logger.warning("演化闭环异常: %s", e)
+
+
+def _save_task(result: dict, task_type) -> None:
+    """保存任务记录到数据库。"""
+    try:
+        conn = get_conn()
+        conn.execute(
+            """INSERT INTO task_list (task_type, task_content, task_steps, status, cost_time, work_score, life_score)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                task_type.value if hasattr(task_type, 'value') else str(task_type),
+                result["task_text"],
+                str(result["steps"]),
+                result["status"],
+                result["cost_time"],
+                result["work_score"],
+                result["life_score"],
+            ),
+        )
+        conn.commit()
+        conn.close()
+        logger.info("任务记录已保存")
+    except Exception as e:
+        logger.warning("任务保存失败: %s", e)

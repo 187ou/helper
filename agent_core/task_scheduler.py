@@ -5,7 +5,7 @@ from typing import Any, Generator
 
 from core.context import new_task_id, set_task_id
 from agent_core.task_parser import parse, detect_task_type
-from agent_core.graph_builder import build_graph
+from agent_core.graph_builder import build_graph, build_dag
 from evolution_core.judge_score import score_work, score_life, combined_score
 from memory_store.sqlite_db import now_str
 from config.app_const import TaskStatus, ai_to_lifecycle_status
@@ -227,25 +227,25 @@ def run_stream(task_text: str) -> Generator[dict, None, None]:
             node_status = {}
             for r in step_results:
                 node_status[f"step_{r['index']}"] = "success" if r.get("result") else "failed"
-            dag_nodes = []
-            dag_edges = []
-            for i, s in enumerate(steps):
-                nid = f"step_{s.index}"
-                dag_nodes.append({
-                    "id": nid,
-                    "label": s.name,
-                    "desc": s.description,
-                    "status": node_status.get(nid, "pending"),
+
+            # 使用共享 build_dag 生成正确的并行边（fan-out/fan-in）
+            step_dicts = [
+                {
+                    "index": s.index,
+                    "name": s.name,
+                    "description": s.description,
                     "step_type": s.step_type,
-                })
-                if i > 0:
-                    prev_nid = f"step_{steps[i-1].index}"
-                    dag_edges.append({"source": prev_nid, "target": nid})
-            save_dag(task_id, {"nodes": dag_nodes, "edges": dag_edges})
+                    "status": node_status.get(f"step_{s.index}", "pending"),
+                }
+                for s in steps
+            ]
+            dag = build_dag(step_dicts)
+            save_dag(task_id, dag)
 
             # 关键修复：将任务状态从 todo → done/failed
             update_task(task_id, status=final_status)
-            logger.info("任务 #%d 已持久化，状态 → %s，DAG 节点 %d 个", task_id, final_status, len(dag_nodes))
+            logger.info("任务 #%d 已持久化，状态 → %s，DAG 节点 %d 个，边 %d 条",
+                        task_id, final_status, len(dag["nodes"]), len(dag["edges"]))
     except Exception as e:
         logger.warning("持久化任务失败: %s", e)
 

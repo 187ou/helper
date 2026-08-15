@@ -245,22 +245,9 @@ def save_dag(task_id: int, dag_data: dict) -> None:
 
 
 def _build_dag_from_steps(steps: list[dict]) -> dict[str, Any]:
-    """从步骤列表构建 DAG 结构（节点+边）。"""
-    nodes = []
-    edges = []
-    for i, step in enumerate(steps):
-        nodes.append({
-            "id": f"step_{step.get('index', i)}",
-            "label": step.get("name", f"步骤{i}"),
-            "desc": step.get("desc", step.get("description", "")),
-            "status": step.get("status", "pending"),
-            "step_type": step.get("type", step.get("step_type", "action")),
-        })
-        if i > 0:
-            prev = f"step_{steps[i-1].get('index', i-1)}"
-            curr = f"step_{step.get('index', i)}"
-            edges.append({"source": prev, "target": curr})
-    return {"nodes": nodes, "edges": edges}
+    """从步骤列表构建 DAG 结构（节点+边），正确处理并行节点。"""
+    from agent_core.graph_builder import build_dag
+    return build_dag(steps)
 
 
 def _row_to_task(row) -> dict[str, Any]:

@@ -227,7 +227,17 @@ class AsyncEvolutionLoop:
         except Exception as e:
             logger.warning("模式学习异常: %s", e)
 
-        # 4. 流程优化
+        # 3.5 模式使用反馈：如果本次任务使用了演化推荐，强化对应模式
+        try:
+            from evolution_core.pattern_miner import get_top_patterns
+            used_steps = result.get("steps", [])
+            if used_steps and len(used_steps) >= 2:
+                # 查找与本次步骤序列最匹配的模式并记录使用
+                _reinforce_used_pattern(task_text, task_type, used_steps, score, duration, success)
+        except Exception as e:
+            logger.debug("模式强化跳过: %s", e)
+
+        # 4. 流程优化 → 反馈到模式库
         try:
             from service.evolution_config_service import get_config
             if get_config("enable_auto_optimize") and len(result.get("steps", [])) > 2:
@@ -237,6 +247,8 @@ class AsyncEvolutionLoop:
                 optimized = optimize(old_steps)
                 if len(optimized) < len(old_steps):
                     log_flow_optimize(old_steps, optimized)
+                    # 关键反馈：将优化后的流程保存为可复用模式
+                    _save_optimized_as_pattern(task_text, task_type, old_steps, optimized, score)
         except Exception as e:
             logger.warning("流程优化异常: %s", e)
 
@@ -251,6 +263,62 @@ class AsyncEvolutionLoop:
                     log_template_save(tpl["name"], tpl["freq"])
         except Exception as e:
             logger.warning("模板固化异常: %s", e)
+
+
+def _save_optimized_as_pattern(task_text: str, task_type: str, old_steps: list[dict],
+                                optimized_steps: list[dict], score: float) -> None:
+    """将优化后的流程保存为模式（优化→复用反馈）。
+
+    当流程被精简优化后，将优化结果存入 pattern 库，
+    下次同类任务可直接使用优化后的流程，而非原始冗余流程。
+    """
+    try:
+        from evolution_core.pattern_miner import learn_from_task
+        # 用优化后的步骤作为新模板学习（标记为优化来源）
+        learn_from_task(
+            task_text=f"[optimized] {task_text}",
+            steps=optimized_steps,
+            score=min(score + 5, 100),  # 优化流程略有加分
+            duration=0,
+            success=True,
+        )
+        logger.info("优化流程已存入模式库: %d 步 → %d 步", len(old_steps), len(optimized_steps))
+    except Exception as e:
+        logger.debug("优化流程存模式失败: %s", e)
+
+
+def _reinforce_used_pattern(task_text: str, task_type: str, used_steps: list[dict],
+                            score: float, duration: float, success: bool) -> None:
+    """强化与本次任务匹配的模式（使用反馈闭环）。
+
+    当任务实际使用了某个演化推荐的模式时，记录使用以强化该模式的置信度，
+    使下次同类任务更容易命中该模式。
+    """
+    from evolution_core.pattern_miner import get_top_patterns, record_pattern_usage
+    from evolution_core.safe_ops import safe_json_loads
+
+    step_names = [s.get("name", "") for s in used_steps if s.get("name")]
+    if len(step_names) < 2:
+        return
+
+    # 查找最匹配的模式
+    patterns = get_top_patterns(n=20, min_confidence=0.3)
+    best_key = None
+    best_overlap = 0
+
+    for p in patterns:
+        p_steps = safe_json_loads(p.get("step_template"), default=[])
+        if not p_steps:
+            continue
+        # 计算步骤名重叠度
+        overlap = len(set(step_names) & set(p_steps))
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_key = p.get("pattern_key")
+
+    if best_key and best_overlap >= 2:
+        record_pattern_usage(best_key, score, duration, success)
+        logger.debug("模式强化: %s (重叠 %d 步)", best_key, best_overlap)
 
 
 # ── 全局实例 ──

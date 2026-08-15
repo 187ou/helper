@@ -1,4 +1,8 @@
-"""自然语言任务拆解（LLM 驱动 + 规则兜底）。"""
+"""自然语言任务拆解（演化感知：模板优先 → LLM → 规则）。
+
+反馈闭环：
+  parse() → 尝试演化推荐（模板/模式/默认）→ 执行 → learn_from_task() → 强化模式 → 下次更容易命中
+"""
 import json
 import logging
 import re
@@ -40,18 +44,86 @@ _PARSE_SYSTEM_PROMPT = """你是一个任务拆解助手。用户会输入一条
 
 
 def parse(task_text: str) -> list[TaskStep]:
-    """将用户指令拆解为步骤列表（LLM 优先，失败则规则兜底）。"""
+    """将用户指令拆解为步骤列表（演化感知优先级）。
+
+    优先级：
+    1. 演化模板推荐（高频固化模板 / 挖掘模式 / 冷启动默认）
+    2. LLM 拆解
+    3. 规则兜底
+
+    演化反馈闭环：命中模板/模板直接执行 → 执行后 learn_from_task 强化模式 → 下次更易命中
+    """
     if not task_text or not task_text.strip():
         return [TaskStep(0, "空任务", "用户未输入有效指令")]
 
-    # 尝试 LLM 拆解
+    # ── 优先级 1：演化引擎推荐（模板 > 模式 > 默认） ──
+    recommended = _try_recommend_steps(task_text)
+    if recommended:
+        raw_steps, source = recommended
+        steps = [
+            TaskStep(
+                index=i,
+                name=s.get("name", f"步骤{i}"),
+                description=s.get("description", ""),
+                step_type=s.get("step_type", "action"),
+            )
+            for i, s in enumerate(raw_steps)
+        ]
+        logger.info("演化推荐命中 [%s]: %d 步 — %s", source, len(steps), task_text[:40])
+        return steps
+
+    # ── 优先级 2：LLM 拆解 ──
     steps = _parse_with_llm(task_text)
     if steps:
         return steps
 
-    # 兜底：规则拆解
+    # ── 优先级 3：规则兜底 ──
     logger.warning("LLM 拆解失败，使用规则兜底")
     return _parse_with_rules(task_text)
+
+
+def _try_recommend_steps(task_text: str) -> tuple[list[dict], str] | None:
+    """尝试从演化引擎获取推荐步骤。
+
+    Returns:
+        (steps, source) 命中时返回，source 为 "template" / "pattern" / "default"
+        None 表示无命中，需回退到 LLM
+    """
+    task_type = detect_task_type(task_text).value
+
+    # ── 1. 已固化模板（最高优先级：用户高频习惯） ──
+    try:
+        from evolution_core.template_save import list_templates
+        templates = list_templates()
+        for tpl in templates:
+            name = tpl.get("name", "")
+            if name and name in task_text:
+                tpl_steps = tpl.get("steps", [])
+                if tpl_steps:
+                    logger.info("固化模板命中: %s", name)
+                    return tpl_steps, "template"
+    except Exception as e:
+        logger.debug("模板匹配失败: %s", e)
+
+    # ── 2. 挖掘模式（中优先级：历史最优流程） ──
+    try:
+        from evolution_core.pattern_miner import recommend_steps
+        pattern_steps = recommend_steps(task_text, task_type)
+        if pattern_steps:
+            return pattern_steps, "pattern"
+    except Exception as e:
+        logger.debug("模式推荐失败: %s", e)
+
+    # ── 3. 冷启动默认模板（低优先级：最佳实践） ──
+    try:
+        from evolution_core.cold_start import get_default_template
+        default_steps = get_default_template(task_text)
+        if default_steps:
+            return default_steps, "default"
+    except Exception as e:
+        logger.debug("默认模板匹配失败: %s", e)
+
+    return None
 
 
 def _parse_with_llm(task_text: str) -> list[TaskStep] | None:

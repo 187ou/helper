@@ -9,13 +9,14 @@ from memory_store.sqlite_db import get_conn, now_str
 logger = logging.getLogger(__name__)
 
 # ── 状态机 ──
-VALID_STATUSES = {"todo", "doing", "done", "archived", "shelved"}
+VALID_STATUSES = {"todo", "doing", "done", "failed", "archived", "shelved"}
 
-# 允许的状态流转（空集合 = 任意目标）
+# 允许的状态流转（空集合 = 终态，禁止任何流出）
 TRANSITIONS: dict[str, set[str]] = {
-    "todo": {"doing", "shelved", "done"},
-    "doing": {"done", "shelved", "todo"},
+    "todo": {"doing", "shelved", "done", "failed"},
+    "doing": {"done", "failed", "shelved", "todo"},
     "done": {"doing", "archived", "shelved"},
+    "failed": {"doing", "todo", "shelved"},  # 失败后可重试
     "archived": set(),  # 终态
     "shelved": {"todo", "doing"},  # 搁置后可恢复
 }
@@ -103,7 +104,8 @@ def create_task(
 
 def update_task(task_id: int, **kwargs) -> dict[str, Any] | None:
     """更新任务字段。"""
-    allowed = {"task_content", "tags", "priority", "deadline", "related_doc", "task_type", "task_steps", "dag_json"}
+    allowed = {"task_content", "tags", "priority", "deadline", "related_doc",
+               "task_type", "task_steps", "dag_json", "status"}
     fields = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
     if not fields:
         return get_task(task_id)
@@ -114,6 +116,11 @@ def update_task(task_id: int, **kwargs) -> dict[str, Any] | None:
         fields["priority"] = "medium"
     if "task_type" in fields and fields["task_type"] not in VALID_TYPES:
         fields["task_type"] = "work"
+    if "status" in fields and fields["status"] not in VALID_STATUSES:
+        logger.warning("忽略无效状态: %s", fields.pop("status", None))
+        fields.pop("status", None)
+        if not fields:
+            return get_task(task_id)
 
     fields["update_time"] = now_str()
     set_clause = ", ".join(f"{k} = ?" for k in fields)

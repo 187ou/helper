@@ -8,8 +8,8 @@ from agent_core.task_parser import parse, detect_task_type
 from agent_core.graph_builder import build_graph
 from evolution_core.judge_score import score_work, score_life, combined_score
 from memory_store.sqlite_db import now_str
-from config.app_const import TaskStatus
-from service.task_service import create_task, save_dag, get_task
+from config.app_const import TaskStatus, ai_to_lifecycle_status
+from service.task_service import create_task, save_dag, get_task, update_task
 from evolution_core.async_evolution import submit_evolution, start_async_evolution, shutdown_async_evolution
 
 logger = logging.getLogger(__name__)
@@ -134,7 +134,7 @@ def _evolution_loop_sync_fallback(task_text: str, result: dict) -> None:
         score = scores.get("overall", 60)
 
         task_type = result.get("task_type", "work")
-        success = result.get("status") == "success"
+        success = result.get("status") == TaskStatus.SUCCESS.value
         duration = result.get("cost_time", 0)
 
         # 权重迭代
@@ -208,7 +208,7 @@ def run_stream(task_text: str) -> Generator[dict, None, None]:
     yield {"type": "log", "data": {"message": f"执行完成，总耗时 {cost_time:.2f}s"}}
     yield {"type": "done", "data": {"cost_time": cost_time}}
 
-    # 持久化任务 + DAG
+    # 持久化任务 + DAG + 状态流转
     try:
         task = create_task(
             content=task_text,
@@ -218,6 +218,11 @@ def run_stream(task_text: str) -> Generator[dict, None, None]:
         )
         if task:
             task_id = task["id"]
+
+            # 根据执行结果确定最终生命周期状态
+            all_steps_ok = len(step_results) > 0 and all(r.get("result") for r in step_results)
+            final_status = TaskStatus.DONE.value if all_steps_ok else TaskStatus.FAILED.value
+
             # 构建 DAG：节点状态从 step_results 获取
             node_status = {}
             for r in step_results:
@@ -237,7 +242,10 @@ def run_stream(task_text: str) -> Generator[dict, None, None]:
                     prev_nid = f"step_{steps[i-1].index}"
                     dag_edges.append({"source": prev_nid, "target": nid})
             save_dag(task_id, {"nodes": dag_nodes, "edges": dag_edges})
-            logger.info("任务 #%d 已持久化，DAG 节点 %d 个", task_id, len(dag_nodes))
+
+            # 关键修复：将任务状态从 todo → done/failed
+            update_task(task_id, status=final_status)
+            logger.info("任务 #%d 已持久化，状态 → %s，DAG 节点 %d 个", task_id, final_status, len(dag_nodes))
     except Exception as e:
         logger.warning("持久化任务失败: %s", e)
 
@@ -286,19 +294,21 @@ def _build_node_context(step, state) -> str:
 
 
 def _save_task(result: dict, task_type) -> None:
-    """保存任务记录到数据库。"""
+    """保存任务记录到数据库（AI 执行状态 → 生命周期状态）。"""
     try:
         from memory_store.repositories import TaskRepository
         repo = TaskRepository()
+        # 关键：将 AI 执行状态映射为生命周期状态后再持久化
+        lifecycle_status = ai_to_lifecycle_status(result.get("status", ""))
         repo.save(
             task_type=task_type.value if hasattr(task_type, 'value') else str(task_type),
             content=result["task_text"],
             steps=result["steps"],
-            status=result["status"],
+            status=lifecycle_status,
             cost_time=result["cost_time"],
             work_score=result["work_score"],
             life_score=result["life_score"],
         )
-        logger.info("任务记录已保存")
+        logger.info("任务记录已保存: status=%s (AI原始=%s)", lifecycle_status, result.get("status"))
     except Exception as e:
         logger.warning("任务保存失败: %s", e)

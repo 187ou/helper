@@ -1,12 +1,14 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Button, Input, Tag, Spin, Tooltip, message, Space, Card, Avatar, Modal, Collapse,
 } from 'antd'
 import {
   SendOutlined, StopOutlined, RobotOutlined, UserOutlined,
-  DeleteOutlined, HistoryOutlined, ClearOutlined,
+  DeleteOutlined, HistoryOutlined, ClearOutlined, UnorderedListOutlined,
 } from '@ant-design/icons'
 import { api } from '../api'
+import FeedbackCollector from '../components/FeedbackCollector'
 
 interface ChatMessage {
   id: string
@@ -28,12 +30,14 @@ interface ChatStep {
 const STORAGE_KEY = 'chat_history'
 
 export default function Chat() {
+  const navigate = useNavigate()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [configured, setConfigured] = useState(true)
   const [currentSteps, setCurrentSteps] = useState<ChatStep[]>([])
   const [showHistory, setShowHistory] = useState(false)
+  const [createdTaskIds, setCreatedTaskIds] = useState<number[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -145,6 +149,15 @@ export default function Chat() {
         timestamp: Date.now(),
       }
       setMessages((prev) => [...prev, aiMessage])
+
+      // 提示查看创建的任务
+      if (createdTaskIds.length > 0) {
+        setTimeout(() => {
+          message.success(
+            <span>已创建 {createdTaskIds.length} 个任务 <Button type="link" size="small" onClick={() => navigate('/tasks')}>查看任务</Button></span>
+          )
+        }, 500)
+      }
     } catch (e: any) {
       if (e.name !== 'AbortError') {
         setMessages((prev) => [...prev, {
@@ -296,9 +309,15 @@ export default function Chat() {
                 )}
               </div>
 
-              {/* 时间和删除 */}
+              {/* 时间和操作 */}
               <div className={`flex items-center gap-2 mt-1 text-[10px] text-gray-400 ${msg.role === 'user' ? 'justify-end' : ''}`}>
                 {new Date(msg.timestamp).toLocaleTimeString()}
+                {msg.role === 'assistant' && (
+                  <FeedbackCollector
+                    context={{ original: msg.content }}
+                    size="small"
+                  />
+                )}
                 <button
                   className="opacity-0 group-hover:opacity-100 hover:text-red-500 transition-opacity"
                   onClick={() => deleteMessage(msg.id)}
@@ -342,6 +361,20 @@ export default function Chat() {
 
         <div ref={messagesEndRef} />
       </div>
+
+      {/* 底部操作栏 */}
+      {createdTaskIds.length > 0 && (
+        <div className="px-6 py-2 border-t border-gray-100 bg-gray-50 flex items-center justify-between">
+          <span className="text-xs text-gray-500">
+            ✅ AI 已创建 {createdTaskIds.length} 个任务
+          </span>
+          <Space>
+            <Button size="small" icon={<UnorderedListOutlined />} onClick={() => navigate('/tasks')}>
+              查看任务
+            </Button>
+          </Space>
+        </div>
+      )}
 
       {/* 输入区 */}
       <div className="px-6 py-4 border-t border-gray-100 bg-white">

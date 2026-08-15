@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Card, Row, Col, Statistic, Segmented, List, Tag, Button, Progress,
   Timeline, Empty, Spin, Tooltip, Collapse, Badge, message,
 } from 'antd'
 import {
   AimOutlined, ThunderboltOutlined, RobotOutlined, FireOutlined,
-  ReloadOutlined, DeleteOutlined, InfoCircleOutlined,
+  ReloadOutlined, DeleteOutlined, InfoCircleOutlined, ExperimentOutlined,
+  BulbOutlined,
 } from '@ant-design/icons'
 import { api } from '../api'
 
@@ -36,24 +38,31 @@ const TYPE_CONFIG: Record<string, { label: string; color: string; icon: string }
 }
 
 export default function Evolution() {
+  const navigate = useNavigate()
   const [stats, setStats] = useState<Record<string, number>>({})
   const [logs, setLogs] = useState<EvoLog[]>([])
   const [weights, setWeights] = useState<Weight[]>([])
   const [behaviorStats, setBehaviorStats] = useState<BehaviorStats | null>(null)
   const [filter, setFilter] = useState('all')
   const [loading, setLoading] = useState(true)
+  const [patterns, setPatterns] = useState<any[]>([])
+  const [report, setReport] = useState<any>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [s, w, b] = await Promise.all([
+      const [s, w, b, p, r] = await Promise.all([
         api.getStats(),
         api.getWeights(),
         api.getBehaviorStats(),
+        api.getPatterns(0.3).catch(() => []),
+        api.getLatestReport('daily').catch(() => null),
       ])
       setStats(s)
       setWeights(w)
       setBehaviorStats(b)
+      setPatterns(p)
+      setReport(r)
     } finally {
       setLoading(false)
     }
@@ -251,6 +260,52 @@ export default function Evolution() {
           </div>
         </Card>
       </div>
+
+      {/* 推荐应用区域 */}
+      {(patterns.length > 0 || report) && (
+        <Card
+          size="small"
+          title={<span><BulbOutlined /> 推荐应用</span>}
+          className="glass"
+        >
+          <Row gutter={16}>
+            {patterns.length > 0 && (
+              <Col span={12}>
+                <div className="text-xs font-medium text-gray-600 mb-2">📐 发现的工作流模式</div>
+                <List
+                  size="small"
+                  dataSource={patterns.slice(0, 3)}
+                  renderItem={(p) => (
+                    <List.Item className="py-1">
+                      <div className="flex items-center justify-between w-full">
+                        <span className="text-xs text-gray-600">{p.pattern_key}</span>
+                        <Tag color="blue">置信度 {p.confidence}</Tag>
+                      </div>
+                    </List.Item>
+                  )}
+                />
+                <Button size="small" type="link" onClick={() => navigate('/templates')}>
+                  应用到模板 →
+                </Button>
+              </Col>
+            )}
+            {report?.content?.suggestions?.length > 0 && (
+              <Col span={12}>
+                <div className="text-xs font-medium text-gray-600 mb-2">💡 改进建议</div>
+                <List
+                  size="small"
+                  dataSource={report.content.suggestions.slice(0, 3)}
+                  renderItem={(s) => (
+                    <List.Item className="py-1">
+                      <span className="text-xs text-gray-600">{s}</span>
+                    </List.Item>
+                  )}
+                />
+              </Col>
+            )}
+          </Row>
+        </Card>
+      )}
     </div>
   )
 }

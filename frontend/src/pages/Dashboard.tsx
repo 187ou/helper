@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Card, Row, Col, Statistic, Progress, Segmented, List, Tag, Button,
-  Input, Select, Space, Empty, Spin,
+  Input, Select, Space, Empty, Spin, Alert, Tooltip,
 } from 'antd'
 import {
   CheckCircleTwoTone, ClockCircleTwoTone, RiseOutlined,
-  PlusOutlined, SearchOutlined,
+  PlusOutlined, SearchOutlined, BulbOutlined, ThunderboltOutlined,
+  ExperimentOutlined,
 } from '@ant-design/icons'
 import { api } from '../api'
 
@@ -32,7 +34,7 @@ interface Task {
 }
 
 const STATUS_LABELS: Record<string, string> = {
-  todo: '待办', doing: '进行中', done: '已完成', archived: '归档', shelved: '搁置',
+  todo: '待办', doing: '进行中', done: '已完成', failed: '失败', archived: '归档', shelved: '搁置',
 }
 const PRIORITY_COLOR: Record<string, string> = {
   high: 'red', medium: 'orange', low: 'blue',
@@ -42,6 +44,7 @@ const TYPE_ICON: Record<string, string> = {
 }
 
 export default function Dashboard() {
+  const navigate = useNavigate()
   const [stats, setStats] = useState<Stats | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
   const [view, setView] = useState('today')
@@ -49,22 +52,38 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [quickTitle, setQuickTitle] = useState('')
   const [quickType, setQuickType] = useState('work')
+  // 演化洞察
+  const [evoReport, setEvoReport] = useState<any>(null)
+  const [recommendedTpl, setRecommendedTpl] = useState<any>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [statsRes, tasksRes] = await Promise.all([
+      const [statsRes, tasksRes, report] = await Promise.all([
         api.getTaskStats(),
         api.getTasks('?limit=50'),
+        api.getLatestReport('daily').catch(() => null),
       ])
       setStats(statsRes)
       setTasks(tasksRes)
+      setEvoReport(report)
     } finally {
       setLoading(false)
     }
   }, [])
 
+  // 加载推荐模板
+  const loadRecommendation = useCallback(async () => {
+    try {
+      const rec = await api.recommendTemplate('周报', 'work')
+      setRecommendedTpl(rec)
+    } catch {
+      // 忽略
+    }
+  }, [])
+
   useEffect(() => { load() }, [load])
+  useEffect(() => { loadRecommendation() }, [loadRecommendation])
 
   async function quickAdd() {
     if (!quickTitle.trim()) return
@@ -97,6 +116,11 @@ export default function Dashboard() {
   const lifeItems = filtered.filter((t) => t.task_type === 'life')
   const healthItems = filtered.filter((t) => t.task_type === 'health' || t.task_type === 'mix')
 
+  // 演化洞察摘要
+  const evoHighlights = evoReport?.content?.highlights || []
+  const evoSuggestions = evoReport?.content?.suggestions || []
+  const scoreTrend = evoReport?.content?.score_trend
+
   return (
     <div className="h-full flex flex-col p-6 gap-4 overflow-y-auto">
       {/* 标题 */}
@@ -106,6 +130,80 @@ export default function Dashboard() {
           聚合工作 · 生活 · 健康全量待办，掌握每日事务全貌
         </p>
       </div>
+
+      {/* 演化洞察 + 推荐 */}
+      {!loading && (evoHighlights.length > 0 || recommendedTpl?.steps) && (
+        <Row gutter={16}>
+          {evoHighlights.length > 0 && (
+            <Col span={12}>
+              <Card
+                size="small"
+                title={<span><ExperimentOutlined /> 演化洞察</span>}
+                className="glass"
+                extra={<Button size="small" type="link" onClick={() => navigate('/evolution')}>详情</Button>}
+              >
+                <List
+                  size="small"
+                  dataSource={evoHighlights.slice(0, 3)}
+                  renderItem={(item) => (
+                    <List.Item className="py-1">
+                      <span className="text-xs text-gray-600">💡 {item}</span>
+                    </List.Item>
+                  )}
+                />
+                {scoreTrend?.trend && (
+                  <div className="mt-2 text-xs text-gray-500">
+                    分数趋势: <Tag color={scoreTrend.trend === 'improving' ? 'green' : scoreTrend.trend === 'declining' ? 'red' : 'blue'}>
+                      {scoreTrend.trend === 'improving' ? '上升' : scoreTrend.trend === 'declining' ? '下降' : '稳定'}
+                    </Tag>
+                  </div>
+                )}
+              </Card>
+            </Col>
+          )}
+          {recommendedTpl?.steps && (
+            <Col span={12}>
+              <Card
+                size="small"
+                title={<span><BulbOutlined /> 推荐模板</span>}
+                className="glass"
+                extra={<Button size="small" type="link" onClick={() => navigate('/templates')}>更多</Button>}
+              >
+                <div className="text-xs text-gray-500 mb-2">
+                  基于您的使用习惯，推荐以下模板（来源: {recommendedTpl.source}）
+                </div>
+                <List
+                  size="small"
+                  dataSource={recommendedTpl.steps.slice(0, 3)}
+                  renderItem={(item, i) => (
+                    <List.Item className="py-1">
+                      <span className="text-xs text-gray-600">{i + 1}. {item.name || item}</span>
+                    </List.Item>
+                  )}
+                />
+                <Button
+                  size="small"
+                  type="primary"
+                  icon={<ThunderboltOutlined />}
+                  className="mt-2"
+                  onClick={async () => {
+                    await api.createTask({
+                      content: '执行推荐模板',
+                      task_type: 'work',
+                      priority: 'medium',
+                      steps: recommendedTpl.steps,
+                      source: 'recommendation',
+                    })
+                    navigate('/tasks')
+                  }}
+                >
+                  一键启动
+                </Button>
+              </Card>
+            </Col>
+          )}
+        </Row>
+      )}
 
       {/* 统计卡片 */}
       <Row gutter={16}>

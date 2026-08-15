@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Card, Table, Tag, Button, Modal, Form, Input, Select, DatePicker, Space,
   Popconfirm, Drawer, Descriptions, Tooltip, Segmented, Empty, message, Badge,
@@ -27,6 +28,7 @@ const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   todo: { label: '待办', color: 'default' },
   doing: { label: '进行中', color: 'processing' },
   done: { label: '已完成', color: 'success' },
+  failed: { label: '失败', color: 'error' },
   archived: { label: '归档', color: 'cyan' },
   shelved: { label: '搁置', color: 'warning' },
 }
@@ -34,14 +36,16 @@ const PRIORITY_COLOR: Record<string, string> = { high: 'red', medium: 'orange', 
 const TYPE_LABELS: Record<string, string> = { work: '💼 工作', life: '🏠 生活', health: '💪 健康', mix: '🔀 混合' }
 
 const STATUS_FLOW: Record<string, string[]> = {
-  todo: ['doing', 'done', 'shelved'],
-  doing: ['done', 'todo', 'shelved'],
+  todo: ['doing', 'done', 'failed', 'shelved'],
+  doing: ['done', 'failed', 'todo', 'shelved'],
   done: ['doing', 'archived', 'shelved'],
+  failed: ['doing', 'todo', 'shelved'],
   shelved: ['todo', 'doing'],
   archived: [],
 }
 
 export default function Tasks() {
+  const navigate = useNavigate()
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(false)
   const [filter, setFilter] = useState({ status: '', task_type: '', priority: '', keyword: '' })
@@ -116,11 +120,40 @@ export default function Tasks() {
 
   async function handleStatusChange(id: number, status: string) {
     try {
+      const task = tasks.find((t) => t.id === id)
       await api.changeTaskStatus(id, status)
       message.success(`状态已更新为「${STATUS_LABELS[status]?.label}」`)
       load()
+
+      // 任务完成时触发演化闭环
+      if (status === 'done' && task) {
+        triggerEvolution(task)
+      }
     } catch (e: any) {
       message.error(e.message || '状态变更失败')
+    }
+  }
+
+  // 触发演化闭环
+  async function triggerEvolution(task: Task) {
+    try {
+      // 记录行为
+      await api.logBehavior('task_complete', {
+        task_id: task.id,
+        task_type: task.task_type,
+        content: task.task_content,
+      })
+
+      // 触发演化学习（权重迭代 + 模式学习）
+      const response = await fetch('/api/chat/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: `演化学习: ${task.task_content}` }),
+      })
+
+      // 静默处理，不影响用户体验
+    } catch {
+      // 演化失败不影响主流程
     }
   }
 
@@ -338,6 +371,19 @@ export default function Tasks() {
             </Descriptions.Item>
             <Descriptions.Item label="创建时间">{drawerTask.create_time}</Descriptions.Item>
             <Descriptions.Item label="更新时间">{drawerTask.update_time || '—'}</Descriptions.Item>
+            <Descriptions.Item label="知识库检索">
+              <a onClick={() => {
+                // 跳转到知识库并搜索相关内容
+                window.open(`/kb?search=${encodeURIComponent(drawerTask.task_content)}`, '_self')
+              }}>
+                🔍 搜索相关知识 →
+              </a>
+            </Descriptions.Item>
+            <Descriptions.Item label="DAG 编排">
+              <a onClick={() => navigate(`/tasks/${drawerTask.id}/dag`)}>
+                📊 查看 DAG →
+              </a>
+            </Descriptions.Item>
           </Descriptions>
         )}
       </Drawer>

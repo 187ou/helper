@@ -15,11 +15,41 @@ class TaskType(str, Enum):
     MIX = "mix"
 
 
-# ── 任务状态 ──
+# ── 任务状态（统一模型） ──
 class TaskStatus(str, Enum):
+    # ── 生命周期状态（持久化到 DB） ──
+    TODO = "todo"
+    DOING = "doing"
+    DONE = "done"
+    FAILED = "failed"
+    ARCHIVED = "archived"
+    SHELVED = "shelved"
+
+    # ── AI 执行状态（内部中间态，持久化前需映射） ──
     RUNNING = "running"
     SUCCESS = "success"
     FAIL = "fail"
+
+
+# ── AI 执行状态 → 生命周期状态映射 ──
+_AI_STATUS_MAP: dict[str, str] = {
+    TaskStatus.RUNNING.value: TaskStatus.DOING.value,
+    TaskStatus.SUCCESS.value: TaskStatus.DONE.value,
+    TaskStatus.FAIL.value: TaskStatus.FAILED.value,
+}
+
+
+def ai_to_lifecycle_status(ai_status: str) -> str:
+    """将 AI 执行结果状态映射为任务生命周期状态。
+
+    >>> ai_to_lifecycle_status("success")
+    'done'
+    >>> ai_to_lifecycle_status("fail")
+    'failed'
+    >>> ai_to_lifecycle_status("unknown")  # 未知状态降级为 doing
+    'doing'
+    """
+    return _AI_STATUS_MAP.get(ai_status, TaskStatus.DOING.value)
 
 
 # ── 日程分类 ──

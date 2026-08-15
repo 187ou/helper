@@ -51,6 +51,15 @@ export const api = {
   getStats: () => request('/evolution/stats'),
   getLogs: (type = '') => request(`/evolution/logs?evo_type=${type}`),
   getWeights: () => request('/evolution/weights'),
+  getTemplates: () => request('/evolution/templates'),
+  recommendTemplate: (text, type = '') => request(`/evolution/templates/recommend?task_text=${encodeURIComponent(text)}&task_type=${type}`),
+  getDefaultTemplates: () => request('/evolution/templates/defaults'),
+  getPatterns: (minConf = 0) => request(`/evolution/patterns?min_confidence=${minConf}`),
+  minePatterns: () => request('/evolution/patterns/mine', { method: 'POST' }),
+  getDailyReport: () => request('/evolution/report/daily'),
+  getWeeklyReport: () => request('/evolution/report/weekly'),
+  getLatestReport: (type = 'daily') => request(`/evolution/report/latest?report_type=${type}`),
+  runForgetting: () => request('/evolution/forgetting', { method: 'POST' }),
 
   // 知识库
   getDocs: () => request('/kb/list'),
@@ -194,4 +203,11 @@ export const api = {
   createBackup: (data) => request('/system/backup', { method: 'POST', body: JSON.stringify(data) }),
   restoreBackup: (data) => request('/system/restore', { method: 'POST', body: JSON.stringify(data) }),
   resetData: (target) => request(`/system/reset/${target}`, { method: 'DELETE' }),
+
+  // 工具库
+  getToolList: () => request('/tool/list'),
+  generateTool: (desc) => request('/tool/generate', { method: 'POST', body: JSON.stringify({ description: desc }) }),
+  saveTool: (name, desc, code) => request(`/tool/${encodeURIComponent(name)}/save`, { method: 'POST', body: JSON.stringify({ name, description: desc, code }) }),
+  runTool: (id) => request(`/tool/${encodeURIComponent(id)}/run`, { method: 'POST', body: JSON.stringify({}) }),
+  deleteTool: (id) => request(`/tool/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }

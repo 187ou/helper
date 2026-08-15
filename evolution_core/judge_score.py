@@ -14,6 +14,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from config.app_const import TaskStatus
 from evolution_core.safe_ops import (
     safe_llm_json, safe_divide, safe_avg, clamp_value,
     validate_task_result,
@@ -263,7 +264,7 @@ def _rule_score(result: dict[str, Any], task_type: str) -> dict[str, Any]:
     consistency = completeness
 
     # 5. 满意度
-    satisfaction = 80 if status == "success" and completeness >= 80 else 60
+    satisfaction = 80 if status == TaskStatus.SUCCESS.value and completeness >= 80 else 60
 
     # 6. 创新度
     novelty = 50

@@ -22,6 +22,8 @@ from datetime import datetime
 from queue import Queue, Empty
 from typing import Any, Callable, Optional
 
+from config.app_const import TaskStatus
+
 logger = logging.getLogger(__name__)
 
 # ── 配置 ──
@@ -208,7 +210,7 @@ class AsyncEvolutionLoop:
         score = detailed_scores.get("overall", 60)
 
         task_type = result.get("task_type", "work")
-        success = result.get("status") == "success"
+        success = result.get("status") == TaskStatus.SUCCESS.value
         duration = result.get("cost_time", 0)
 
         # 2. 权重迭代

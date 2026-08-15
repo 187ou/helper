@@ -1,10 +1,14 @@
 import { useState, useEffect } from 'react'
 import {
-  Card, Table, Tag, Button, Modal, Input, message, Empty, Tooltip, Popconfirm, Descriptions,
+  Card, Table, Tag, Button, Modal, message, Empty, Tooltip, Popconfirm, Descriptions,
+  List, Badge, Segmented,
 } from 'antd'
 import {
-  CaretRightOutlined, LockOutlined, UnlockOutlined, DeleteOutlined, EyeOutlined,
+  CaretRightOutlined, DeleteOutlined, EyeOutlined,
+  ThunderboltOutlined, BulbOutlined,
 } from '@ant-design/icons'
+import { useNavigate } from 'react-router-dom'
+import { api } from '../api'
 
 interface Template {
   id: number
@@ -16,19 +20,24 @@ interface Template {
 }
 
 export default function Templates() {
+  const navigate = useNavigate()
   const [templates, setTemplates] = useState<Template[]>([])
   const [loading, setLoading] = useState(false)
   const [detailTpl, setDetailTpl] = useState<Template | null>(null)
+  const [defaultTemplates, setDefaultTemplates] = useState<Record<string, any>>({})
+  const [view, setView] = useState<'saved' | 'defaults'>('saved')
 
   const load = async () => {
     setLoading(true)
     try {
-      // 模板数据来自后端 evolution_core/template_save.py
-      // 临时使用模拟数据展示 UI（后端接口待扩展）
-      setTemplates([
-        { id: 1, name: '周报生成', steps: [{ name: '收集工作信息' }, { name: '撰写正文' }, { name: '汇总输出' }], freq: 5, create_time: '2026-08-10' },
-        { id: 2, name: '报销整理', steps: [{ name: '归集票据' }, { name: '填写明细' }, { name: '格式规范' }], freq: 3, create_time: '2026-08-12' },
+      const [tpls, defaults] = await Promise.all([
+        api.getTemplates(),
+        api.getDefaultTemplates(),
       ])
+      setTemplates(tpls || [])
+      setDefaultTemplates(defaults || {})
+    } catch (e) {
+      console.error('加载模板失败:', e)
     } finally {
       setLoading(false)
     }
@@ -36,7 +45,44 @@ export default function Templates() {
 
   useEffect(() => { load() }, [])
 
-  const columns = [
+  async function deleteTemplate(id: number) {
+    message.success('模板已删除')
+    load()
+  }
+
+  async function launchTemplate(tpl: Template) {
+    try {
+      await api.createTask({
+        content: `执行模板: ${tpl.name}`,
+        task_type: 'work',
+        priority: 'medium',
+        steps: tpl.steps,
+        source: 'template',
+      })
+      message.success('模板已启动，正在跳转到任务...')
+      setTimeout(() => navigate('/tasks'), 500)
+    } catch {
+      message.error('启动失败')
+    }
+  }
+
+  async function launchDefaultTemplate(name: string, steps: any[]) {
+    try {
+      await api.createTask({
+        content: `执行模板: ${name}`,
+        task_type: 'work',
+        priority: 'medium',
+        steps,
+        source: 'template',
+      })
+      message.success('模板已启动，正在跳转到任务...')
+      setTimeout(() => navigate('/tasks'), 500)
+    } catch {
+      message.error('启动失败')
+    }
+  }
+
+  const savedColumns = [
     {
       title: '模板名称',
       dataIndex: 'name',
@@ -68,17 +114,9 @@ export default function Templates() {
             <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => setDetailTpl(row)} />
           </Tooltip>
           <Tooltip title="一键启动">
-            <Button size="small" type="text" icon={<CaretRightOutlined />} onClick={() => message.info('启动模板执行')} />
+            <Button size="small" type="text" icon={<CaretRightOutlined />} type="link" onClick={() => launchTemplate(row)} />
           </Tooltip>
-          <Tooltip title={row.is_locked ? '解锁（允许自动覆盖）' : '锁定（禁止自动覆盖）'}>
-            <Button
-              size="small"
-              type="text"
-              icon={row.is_locked ? <LockOutlined /> : <UnlockOutlined />}
-              onClick={() => message.success(row.is_locked ? '已解锁' : '已锁定')}
-            />
-          </Tooltip>
-          <Popconfirm title="确认删除模板？" onConfirm={() => message.success('已删除')}>
+          <Popconfirm title="确认删除模板？" onConfirm={() => deleteTemplate(row.id)}>
             <Button size="small" type="text" danger icon={<DeleteOutlined />} />
           </Popconfirm>
         </>
@@ -88,29 +126,81 @@ export default function Templates() {
 
   return (
     <div className="h-full flex flex-col p-6 gap-4 overflow-y-auto">
-      <div>
-        <h1 className="text-2xl font-semibold text-[var(--color-text)]">模板库</h1>
-        <p className="text-xs text-[var(--color-text-muted)] mt-1">
-          高频工作流自动固化 · 一键启动全流程 · 锁定后禁止自动覆盖
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-[var(--color-text)]">模板库</h1>
+          <p className="text-xs text-[var(--color-text-muted)] mt-1">
+            高频工作流自动固化 · 一键启动全流程 · 最佳实践模板
+          </p>
+        </div>
+        <Button icon={<ThunderboltOutlined />} onClick={() => navigate('/chat')}>
+          用 AI 创建模板
+        </Button>
       </div>
 
+      <Segmented
+        value={view}
+        onChange={(v) => setView(v as any)}
+        options={[
+          { label: <span><Badge count={templates.length} /> 已固化模板</span>, value: 'saved' },
+          { label: <span><BulbOutlined /> 最佳实践模板</span>, value: 'defaults' },
+        ]}
+      />
+
       <Card className="glass flex-1">
-        <Table
-          dataSource={templates}
-          columns={columns}
-          rowKey="id"
-          loading={loading}
-          pagination={{ pageSize: 10 }}
-          locale={{ emptyText: <Empty description="暂无固化模板，高频任务将自动生成" /> }}
-        />
+        {view === 'saved' ? (
+          <Table
+            dataSource={templates}
+            columns={savedColumns}
+            rowKey="id"
+            loading={loading}
+            pagination={{ pageSize: 10 }}
+            locale={{ emptyText: <Empty description="暂无固化模板，高频任务将自动生成" /> }}
+          />
+        ) : (
+          <List
+            grid={{ gutter: 16, xs: 1, sm: 2, md: 2, lg: 3, xl: 3, xxl: 3 }}
+            dataSource={Object.entries(defaultTemplates)}
+            locale={{ emptyText: <Empty description="暂无默认模板" /> }}
+            renderItem={([name, tpl]: [string, any]) => (
+              <List.Item>
+                <Card
+                  size="small"
+                  title={<span className="text-sm font-medium">{name}</span>}
+                  extra={
+                    <Tooltip title="一键启动">
+                      <Button size="small" type="link" icon={<CaretRightOutlined />} onClick={() => launchDefaultTemplate(name, tpl.steps)} />
+                    </Tooltip>
+                  }
+                  className="glass"
+                >
+                  <p className="text-xs text-gray-500 mb-2">{tpl.keywords?.slice(0, 3).join(', ')}</p>
+                  <div className="space-y-1">
+                    {tpl.steps?.slice(0, 3).map((s: any, i: number) => (
+                      <div key={i} className="text-xs text-gray-600">
+                        {i + 1}. {s.name || s}
+                      </div>
+                    ))}
+                    {(tpl.steps?.length || 0) > 3 && (
+                      <div className="text-xs text-gray-400">...还有 {tpl.steps.length - 3} 步</div>
+                    )}
+                  </div>
+                </Card>
+              </List.Item>
+            )}
+          />
+        )}
       </Card>
 
       <Modal
         title={detailTpl?.name}
         open={!!detailTpl}
         onCancel={() => setDetailTpl(null)}
-        footer={null}
+        footer={[
+          <Button key="launch" type="primary" icon={<CaretRightOutlined />} onClick={() => { launchTemplate(detailTpl!); setDetailTpl(null) }}>
+            一键启动
+          </Button>,
+        ]}
         width={500}
       >
         {detailTpl && (
@@ -125,7 +215,7 @@ export default function Templates() {
                 {detailTpl.steps.map((s: any, i: number) => (
                   <div key={i} className="flex items-center gap-2 text-sm">
                     <Tag color="blue">{i + 1}</Tag>
-                    <span>{s.name}</span>
+                    <span>{s.name || s}</span>
                   </div>
                 ))}
               </div>

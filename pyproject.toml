@@ -2,7 +2,7 @@
 name = "desktop-assistant"
 version = "0.1.0"
 description = "私有化本地桌面智能助手"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "PyQt6>=6.7.0",
     "langgraph>=0.2.0",

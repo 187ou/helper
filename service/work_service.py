@@ -1,5 +1,7 @@
-"""办公服务：周报、月报、文书生成（LLM 驱动，真实可用）。"""
+"""办公服务：周报、月报、文书生成、报销分析（LLM 驱动，真实可用）。"""
+import json
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -112,6 +114,73 @@ def archive_files(directory: str) -> dict[str, Any]:
     return {"directory": directory, "total": len(files), "classified": classified}
 
 
-def process_reimbursement(files: list[str]) -> dict[str, Any]:
-    """整理报销材料。"""
-    return {"files": files, "total_amount": 0, "status": "pending", "note": "请补充票据信息"}
+def process_reimbursement(files: list[str], texts: list[str] | None = None) -> dict[str, Any]:
+    """整理报销材料（LLM 提取 + 分类汇总，真实可用）。
+
+    Args:
+        files: PDF/图片 文件路径列表
+        texts: 预提取的 OCR 文本列表（可选）
+    """
+    from tools.pdf_tools import extract_text
+
+    # 1. 提取所有票据文本
+    all_texts: list[str] = list(texts or [])
+    for f in files:
+        if f.lower().endswith(".pdf"):
+            text = extract_text(f)
+            if text.strip():
+                all_texts.append(text)
+
+    if not all_texts:
+        return {"files": files, "items": [], "total": 0, "status": "empty", "note": "未能提取到票据信息"}
+
+    # 2. LLM 提取结构化报销明细
+    combined = "\n---\n".join(all_texts[:8])  # 最多处理 8 张票据
+    prompt = f"""请从以下票据/文本中提取报销明细：
+
+{combined}
+
+要求：
+1. 提取每张票据的：日期（无则填"未知"）、类别（餐饮/交通/住宿/办公/通讯/其他）、金额（数字）、摘要（10字以内）
+2. 计算总金额
+3. 按类别汇总金额
+4. 严格返回 JSON 格式，不要 markdown，不要其他文字
+
+JSON 格式：
+{{"items": [{{"date":"2026-08-10","category":"餐饮","amount":150.0,"summary":"客户招待"}}], "total": 150.0, "by_category": {{"餐饮": 150.0}}}}"""
+
+    result_text = chat([
+        {"role": "system", "content": "你是一位财务票据分析专家，擅长从票据中提取结构化信息。"},
+        {"role": "user", "content": prompt},
+    ], temperature=0.3, max_tokens=1500)
+
+    # 3. 解析 JSON 结果
+    try:
+        match = re.search(r'\{.*\}', result_text, re.DOTALL)
+        if match:
+            parsed = json.loads(match.group())
+            # 标准化金额（确保是数字）
+            for item in parsed.get("items", []):
+                if isinstance(item.get("amount"), str):
+                    amount_match = re.search(r'[\d.]+', item["amount"])
+                    item["amount"] = float(amount_match.group()) if amount_match else 0.0
+                item["amount"] = round(float(item.get("amount", 0)), 2)
+            # 重新计算总金额（避免 LLM 计算错误）
+            parsed["total"] = round(sum(item["amount"] for item in parsed.get("items", [])), 2)
+            parsed["status"] = "ok"
+            parsed["file_count"] = len(files)
+            parsed["text_count"] = len(all_texts)
+            logger.info("报销分析完成: %d 项, 总金额 %.2f", len(parsed.get("items", [])), parsed["total"])
+            return parsed
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning("报销分析 JSON 解析失败: %s", e)
+
+    # 解析失败时返回原始文本
+    return {
+        "files": files,
+        "items": [],
+        "total": 0,
+        "status": "parse_error",
+        "raw_text": result_text[:500],
+        "note": "LLM 输出解析失败，请检查原始文本",
+    }

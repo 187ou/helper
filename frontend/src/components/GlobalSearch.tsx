@@ -67,14 +67,6 @@ export default function GlobalSearch() {
   return (
     <>
       {/* 触发提示 */}
-      <div
-        className="fixed bottom-20 right-6 z-40 text-xs text-gray-400 bg-white/80 px-3 py-1.5 rounded-full shadow cursor-pointer hover:bg-white"
-        onClick={() => setOpen(true)}
-      >
-        <SearchOutlined /> 全局搜索
-        <kbd className="ml-2 px-1.5 py-0.5 bg-gray-100 rounded text-gray-500">⌘K</kbd>
-      </div>
-
       <Modal
         open={open}
         onCancel={close}

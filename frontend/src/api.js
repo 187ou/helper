@@ -1,12 +1,29 @@
 const BASE = '/api'
 
+// 默认超时 30 秒（LLM 调用可能需要更长时间）
+const DEFAULT_TIMEOUT = 30000
+
 async function request(path, options = {}) {
-  const res = await fetch(BASE + path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+  const controller = new AbortController()
+  const timeout = options.timeout || DEFAULT_TIMEOUT
+  const timer = setTimeout(() => controller.abort(), timeout)
+
+  try {
+    const res = await fetch(BASE + path, {
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      ...options,
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      throw new Error(`请求超时（${timeout / 1000}秒）`)
+    }
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 export const api = {
@@ -89,11 +106,11 @@ export const api = {
   }),
   resetEvoConfigs: () => request('/evo-config/reset', { method: 'POST' }),
 
-  // 职场办公 - 文书
-  genWeekly: (data) => request('/work/doc/weekly', { method: 'POST', body: JSON.stringify(data) }),
-  genMonthly: (data) => request('/work/doc/monthly', { method: 'POST', body: JSON.stringify(data) }),
-  genMeeting: (data) => request('/work/doc/meeting', { method: 'POST', body: JSON.stringify(data) }),
-  polishDoc: (data) => request('/work/doc/polish', { method: 'POST', body: JSON.stringify(data) }),
+  // 职场办公 - 文书（LLM 生成需要更长时间）
+  genWeekly: (data) => request('/work/doc/weekly', { method: 'POST', body: JSON.stringify(data), timeout: 60000 }),
+  genMonthly: (data) => request('/work/doc/monthly', { method: 'POST', body: JSON.stringify(data), timeout: 60000 }),
+  genMeeting: (data) => request('/work/doc/meeting', { method: 'POST', body: JSON.stringify(data), timeout: 60000 }),
+  polishDoc: (data) => request('/work/doc/polish', { method: 'POST', body: JSON.stringify(data), timeout: 60000 }),
   saveDoc: (data) => request('/work/doc/save', { method: 'POST', body: JSON.stringify(data) }),
 
   // 职场办公 - Excel
@@ -155,9 +172,9 @@ export const api = {
   updateNote: (id, data) => request(`/note/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteNote: (id) => request(`/note/${id}`, { method: 'DELETE' }),
 
-  // 知识库 - 文档摘要
-  summarizeDoc: (data) => request('/note/summarize', { method: 'POST', body: JSON.stringify(data) }),
-  summarizeAndSave: (data) => request('/note/summarize/save', { method: 'POST', body: JSON.stringify(data) }),
+  // 知识库 - 文档摘要（LLM 调用需要更长时间）
+  summarizeDoc: (data) => request('/note/summarize', { method: 'POST', body: JSON.stringify(data), timeout: 60000 }),
+  summarizeAndSave: (data) => request('/note/summarize/save', { method: 'POST', body: JSON.stringify(data), timeout: 60000 }),
 
   // AI 能力 - 模式
   getAiMode: () => request('/ai/mode'),
@@ -165,12 +182,12 @@ export const api = {
   testConnection: (data) => request('/ai/test', { method: 'POST', body: JSON.stringify(data) }),
   testOllama: (data) => request('/ai/test/ollama', { method: 'POST', body: JSON.stringify(data) }),
 
-  // AI 能力 - 文本处理
-  rewriteText: (data) => request('/ai/text/rewrite', { method: 'POST', body: JSON.stringify(data) }),
-  summarizeText: (data) => request('/ai/text/summarize', { method: 'POST', body: JSON.stringify(data) }),
-  expandText: (data) => request('/ai/text/expand', { method: 'POST', body: JSON.stringify(data) }),
-  formatText: (data) => request('/ai/text/format', { method: 'POST', body: JSON.stringify(data) }),
-  polishText: (data) => request('/ai/text/polish', { method: 'POST', body: JSON.stringify(data) }),
+  // AI 能力 - 文本处理（LLM 调用需要更长时间）
+  rewriteText: (data) => request('/ai/text/rewrite', { method: 'POST', body: JSON.stringify(data), timeout: 60000 }),
+  summarizeText: (data) => request('/ai/text/summarize', { method: 'POST', body: JSON.stringify(data), timeout: 60000 }),
+  expandText: (data) => request('/ai/text/expand', { method: 'POST', body: JSON.stringify(data), timeout: 60000 }),
+  formatText: (data) => request('/ai/text/format', { method: 'POST', body: JSON.stringify(data), timeout: 60000 }),
+  polishText: (data) => request('/ai/text/polish', { method: 'POST', body: JSON.stringify(data), timeout: 60000 }),
 
   // 系统能力
   getStorageInfo: () => request('/system/storage-info'),

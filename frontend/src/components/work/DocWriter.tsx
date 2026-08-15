@@ -16,18 +16,19 @@ export default function DocWriter() {
   const [title, setTitle] = useState('')
 
   // 周报
-  const [workItems, setWorkItems] = useState('')
-  const [notes, setNotes] = useState('')
+  const [workItems, setWorkItems] = useState('完成用户模块开发\n修复 3 个线上 bug\n编写技术文档 5 篇')
+  const [notes, setNotes] = useState('本周工作顺利，按计划推进')
   // 月报
-  const [month, setMonth] = useState('')
-  const [highlights, setHighlights] = useState('')
+  const [month, setMonth] = useState('2026年8月')
+  const [highlights, setHighlights] = useState('项目顺利上线\n性能优化提升 30%')
   // 会议纪要
-  const [meetingText, setMeetingText] = useState('')
+  const [meetingText, setMeetingText] = useState('会议时间：2026-08-15\n参会人员：张三、李四\n会议内容：讨论 Q3 产品规划，确定核心功能优先级')
   // 润色
-  const [polishText, setPolishText] = useState('')
+  const [polishText, setPolishText] = useState('这个方案挺好的，希望能尽快落地实施。')
   const [style, setStyle] = useState('正式')
 
   async function generate() {
+    console.log('[DocWriter] 开始生成, 模式:', activeType)
     setLoading(true)
     setResult('')
     try {
@@ -43,11 +44,14 @@ export default function DocWriter() {
       } else {
         res = await api.polishDoc({ text: polishText, style })
       }
+      console.log('[DocWriter] 生成完成, 内容长度:', res.content?.length)
       setResult(res.content)
       message.success('生成完成')
     } catch (e: any) {
+      console.error('[DocWriter] 生成失败:', e.message)
       message.error(e.message || '生成失败')
     } finally {
+      console.log('[DocWriter] 加载结束')
       setLoading(false)
     }
   }
@@ -135,7 +139,7 @@ export default function DocWriter() {
       <div className="w-1/2 flex flex-col gap-3">
         <Tabs activeKey={activeType} onChange={setActiveType} items={tabItems} size="small" />
         <div className="flex gap-2">
-          <Button type="primary" icon={<ReloadOutlined />} onClick={generate} loading={setLoading}>
+          <Button type="primary" icon={<ReloadOutlined />} onClick={generate} loading={loading}>
             生成
           </Button>
         </div>

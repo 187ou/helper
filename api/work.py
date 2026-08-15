@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from agent_core.llm_client import chat
 from service import work_service
 from tools import excel_tools, pdf_tools, text_writer
-from service.file_service import classify_files, scan_desktop, batch_rename, archive_file
+from service.file_service import classify_files, scan_desktop as _scan_desktop, batch_rename as _batch_rename, archive_file as _archive_file
 from memory_store.sqlite_db import get_conn, now_str
 
 logger = logging.getLogger(__name__)
@@ -276,13 +276,13 @@ def classify(body: dict):
 
 
 @router.post("/archive/rename")
-def rename(body: dict):
+def rename_files(body: dict):
     """批量重命名。"""
     files = body.get("files", [])
     rule = body.get("rule", "prefix")
     if not files:
         raise HTTPException(status_code=400, detail="未提供文件")
-    return batch_rename(files, rule)
+    return _batch_rename(files, rule)
 
 
 @router.post("/archive/move")
@@ -292,14 +292,14 @@ def move_to_archive(body: dict):
     category = body.get("category", "")
     if not src:
         raise HTTPException(status_code=400, detail="未提供源文件路径")
-    dest = archive_file(src, category)
+    dest = _archive_file(src, category)
     return {"ok": bool(dest), "dest": dest}
 
 
 @router.get("/archive/desktop")
 def scan_desktop():
     """扫描桌面文件。"""
-    return scan_desktop()
+    return _scan_desktop()
 
 
 # ═══════════════════════════════════════════

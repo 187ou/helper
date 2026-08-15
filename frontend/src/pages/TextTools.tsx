@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import {
-  Card, Button, Input, Select, Segmented, Space, message, Spin, Empty, Tooltip,
+  Card, Button, Input, InputNumber, Select, Segmented, Space, message, Spin, Empty, Tooltip,
 } from 'antd'
 import {
   EditOutlined, CompressOutlined, ExpandOutlined, AlignLeftOutlined,

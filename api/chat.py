@@ -18,14 +18,20 @@ def check_configured():
 
 @router.post("/send")
 def send_message(body: dict):
+    """非流式接口（兼容旧版），返回简单确认。"""
     text = (body.get("text") or "").strip()
     if not text:
         return {"ok": False, "error": "empty"}
     if not is_llm_configured():
         return {"ok": False, "error": "llm_not_configured"}
 
-    result = run_stream(text)  # 兼容旧接口，实际不会用到
-    return {"ok": True, **result}
+    # 触发任务执行（不等待结果，结果通过 stream 接口获取）
+    from agent_core.task_scheduler import run
+    try:
+        result = run(text)
+        return {"ok": True, "status": result.get("status", "done"), "steps_count": len(result.get("steps", []))}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
 
 
 @router.post("/stream")

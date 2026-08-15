@@ -244,55 +244,34 @@ def archive_categories():
 @router.get("/habit/list")
 def habit_list():
     """列出所有习惯。"""
-    conn = get_conn()
-    rows = conn.execute("SELECT * FROM habit ORDER BY create_time DESC").fetchall()
-    conn.close()
-
-    result = []
     today = datetime.now().strftime("%Y-%m-%d")
-    for r in rows:
-        d = dict(r)
-        # 计算连续打卡天数
-        checkins = conn.execute(  # 需要新连接
-            "SELECT checkin_date FROM habit_checkin WHERE habit_id = ? ORDER BY checkin_date DESC",
-            (d["id"],),
-        ).fetchall()
-        streak = 0
-        checkin_dates = [c["checkin_date"] for c in checkins]
-        check_date = today
-        while check_date in checkin_dates:
-            streak += 1
-            dt = datetime.strptime(check_date, "%Y-%m-%d")
-            check_date = (dt - timedelta(days=1)).strftime("%Y-%m-%d")
-
-        d["streak"] = streak
-        d["checked_today"] = today in checkin_dates
-        d["total_checkins"] = len(checkin_dates)
-        result.append(d)
-
-    # 重新计算（避免连接关闭问题）
-    result = []
     conn = get_conn()
-    rows = conn.execute("SELECT * FROM habit ORDER BY create_time DESC").fetchall()
-    for r in rows:
-        d = dict(r)
-        checkins = conn.execute(
-            "SELECT checkin_date FROM habit_checkin WHERE habit_id = ? ORDER BY checkin_date DESC",
-            (d["id"],),
-        ).fetchall()
-        streak = 0
-        checkin_dates = [c["checkin_date"] for c in checkins]
-        check_date = today
-        while check_date in checkin_dates:
-            streak += 1
-            dt = datetime.strptime(check_date, "%Y-%m-%d")
-            check_date = (dt - timedelta(days=1)).strftime("%Y-%m-%d")
-        d["streak"] = streak
-        d["checked_today"] = today in checkin_dates
-        d["total_checkins"] = len(checkin_dates)
-        result.append(d)
-    conn.close()
-    return result
+    try:
+        rows = conn.execute("SELECT * FROM habit ORDER BY create_time DESC").fetchall()
+
+        result = []
+        for r in rows:
+            d = dict(r)
+            # 计算连续打卡天数
+            checkins = conn.execute(
+                "SELECT checkin_date FROM habit_checkin WHERE habit_id = ? ORDER BY checkin_date DESC",
+                (d["id"],),
+            ).fetchall()
+            streak = 0
+            checkin_dates = [c["checkin_date"] for c in checkins]
+            check_date = today
+            while check_date in checkin_dates:
+                streak += 1
+                dt = datetime.strptime(check_date, "%Y-%m-%d")
+                check_date = (dt - timedelta(days=1)).strftime("%Y-%m-%d")
+
+            d["streak"] = streak
+            d["checked_today"] = today in checkin_dates
+            d["total_checkins"] = len(checkin_dates)
+            result.append(d)
+        return result
+    finally:
+        conn.close()
 
 
 @router.post("/habit/create")

@@ -6,7 +6,6 @@ import time
 import schedule
 
 from service.schedule_service import check_reminders, ack_reminder, daily_archive
-from gui.ui_utils import remind_popup
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +55,7 @@ def _check_health_reminders() -> None:
     due = check_reminders()
     for r in due:
         logger.info("触发提醒: %s", r["name"])
-        if _main_window:
-            remind_popup(_main_window, r["title"], "休息一下吧～", postpone_sec=300)
+        # CLI 模式下仅记录日志，弹窗由 GUI 实现
         ack_reminder(r["name"])
 
 
@@ -65,9 +63,9 @@ def _morning_push() -> None:
     """早 8 点推送今日清单。"""
     from service.schedule_service import get_today_schedule
     items = get_today_schedule()
-    if items and _main_window:
+    if items:
         todo_list = "\n".join(f"• {i['title']}" for i in items[:5])
-        remind_popup(_main_window, "☀️ 今日工作清单", todo_list, postpone_sec=0)
+        logger.info("早间推送:\n%s", todo_list)
 
 
 def _evening_archive() -> None:

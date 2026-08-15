@@ -134,6 +134,19 @@ CREATE TABLE IF NOT EXISTS project (
     update_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 
+CREATE TABLE IF NOT EXISTS note (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    content TEXT DEFAULT '',
+    category TEXT DEFAULT 'note',
+    tags TEXT DEFAULT '',
+    attachments TEXT DEFAULT '[]',
+    linked_task_id INTEGER DEFAULT 0,
+    version INTEGER DEFAULT 1,
+    create_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    update_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+
 CREATE TABLE IF NOT EXISTS kb_file_index (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_name TEXT NOT NULL,

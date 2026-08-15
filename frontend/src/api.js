@@ -147,4 +147,34 @@ export const api = {
   checkinHabit: (id, data) => request(`/life/habit/${id}/checkin`, { method: 'POST', body: JSON.stringify(data) }),
   deleteHabit: (id) => request(`/life/habit/${id}`, { method: 'DELETE' }),
   getHabitCalendar: (id, month = '') => request(`/life/habit/${id}/calendar?month=${month}`),
+
+  // 知识库 - 笔记
+  getNotes: (category = '', keyword = '') => request(`/note/list?category=${category}&keyword=${keyword}`),
+  getNote: (id) => request(`/note/${id}`),
+  createNote: (data) => request('/note/create', { method: 'POST', body: JSON.stringify(data) }),
+  updateNote: (id, data) => request(`/note/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteNote: (id) => request(`/note/${id}`, { method: 'DELETE' }),
+
+  // 知识库 - 文档摘要
+  summarizeDoc: (data) => request('/note/summarize', { method: 'POST', body: JSON.stringify(data) }),
+  summarizeAndSave: (data) => request('/note/summarize/save', { method: 'POST', body: JSON.stringify(data) }),
+
+  // AI 能力 - 模式
+  getAiMode: () => request('/ai/mode'),
+  switchAiMode: (mode) => request('/ai/mode', { method: 'POST', body: JSON.stringify({ mode }) }),
+  testConnection: (data) => request('/ai/test', { method: 'POST', body: JSON.stringify(data) }),
+  testOllama: (data) => request('/ai/test/ollama', { method: 'POST', body: JSON.stringify(data) }),
+
+  // AI 能力 - 文本处理
+  rewriteText: (data) => request('/ai/text/rewrite', { method: 'POST', body: JSON.stringify(data) }),
+  summarizeText: (data) => request('/ai/text/summarize', { method: 'POST', body: JSON.stringify(data) }),
+  expandText: (data) => request('/ai/text/expand', { method: 'POST', body: JSON.stringify(data) }),
+  formatText: (data) => request('/ai/text/format', { method: 'POST', body: JSON.stringify(data) }),
+  polishText: (data) => request('/ai/text/polish', { method: 'POST', body: JSON.stringify(data) }),
+
+  // 系统能力
+  getStorageInfo: () => request('/system/storage-info'),
+  createBackup: (data) => request('/system/backup', { method: 'POST', body: JSON.stringify(data) }),
+  restoreBackup: (data) => request('/system/restore', { method: 'POST', body: JSON.stringify(data) }),
+  resetData: (target) => request(`/system/reset/${target}`, { method: 'DELETE' }),
 }

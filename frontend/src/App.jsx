@@ -13,6 +13,7 @@ import Templates from './pages/Templates'
 import Toolbox from './pages/Toolbox'
 import Work from './pages/Work'
 import Life from './pages/Life'
+import TextTools from './pages/TextTools'
 import GlobalSearch from './components/GlobalSearch'
 import QuickInput from './components/QuickInput'
 
@@ -38,6 +39,7 @@ function App() {
             <Route path="/toolbox" element={<Toolbox />} />
             <Route path="/work" element={<Work />} />
             <Route path="/life" element={<Life />} />
+            <Route path="/text-tools" element={<TextTools />} />
           </Routes>
           <GlobalSearch />
           <QuickInput />

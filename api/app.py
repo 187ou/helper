@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import chat, schedule, evolution, knowledge, settings, task, search, behavior, evo_config, work, life
+from api import chat, schedule, evolution, knowledge, settings, task, search, behavior, evo_config, work, life, note, ai, system
 
 app = FastAPI(title="桌面智能助手 API", version="1.0.0")
 
@@ -27,6 +27,9 @@ app.include_router(behavior.router, prefix="/api/behavior", tags=["behavior"])
 app.include_router(evo_config.router, prefix="/api/evo-config", tags=["evo-config"])
 app.include_router(work.router, prefix="/api/work", tags=["work"])
 app.include_router(life.router, prefix="/api/life", tags=["life"])
+app.include_router(note.router, prefix="/api/note", tags=["note"])
+app.include_router(ai.router, prefix="/api/ai", tags=["ai"])
+app.include_router(system.router, prefix="/api/system", tags=["system"])
 
 
 @app.get("/api/health")

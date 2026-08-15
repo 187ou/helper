@@ -6,6 +6,7 @@ const NAVS = [
   { key: 'tasks', icon: '✅', label: '任务管理', path: '/tasks' },
   { key: 'work', icon: '💼', label: '职场办公', path: '/work' },
   { key: 'life', icon: '🏠', label: '生活健康', path: '/life' },
+  { key: 'text-tools', icon: '✏️', label: '文本处理', path: '/text-tools' },
   { key: 'chat', icon: '💬', label: 'AI 对话', path: '/chat' },
   { key: 'evolution', icon: '🧬', label: '进化中心', path: '/evolution' },
   { key: 'templates', icon: '📐', label: '模板库', path: '/templates' },

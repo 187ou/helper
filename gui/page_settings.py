@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QPushButton, QLabel, QGroupBox, QFrame, QMessageBox, QCheckBox
 )
 from PyQt6.QtCore import QThread, pyqtSignal
-from config.settings import get, set, load_config
+from config.settings import load_config, set
 from gui.style import (
     BG, BG_SIDEBAR, ACCENT, SUCCESS, DANGER, TEXT_SEC, TEXT_MUTED, BORDER, title_font
 )
@@ -89,14 +89,22 @@ class PageSettings(QWidget):
         l.addStretch()
 
     def _load(self):
-        cfg = load_config(); url = cfg.get("api_base_url", ""); model = cfg.get("model_name", "")
+        cfg = load_config()
+        url = cfg.llm.base_url
+        model = cfg.llm.model_name
         matched = False
         for name, p in PRESETS.items():
-            if name == "自定义": continue
+            if name == "自定义":
+                continue
             if p["url"] == url and p["model"] == model:
-                self.combo.setCurrentText(name); matched = True; break
-        if not matched: self.combo.setCurrentText("自定义")
-        self.url_edit.setText(url); self.key_edit.setText(cfg.get("api_key", "")); self.model_edit.setText(model)
+                self.combo.setCurrentText(name)
+                matched = True
+                break
+        if not matched:
+            self.combo.setCurrentText("自定义")
+        self.url_edit.setText(url)
+        self.key_edit.setText(cfg.llm.api_key)
+        self.model_edit.setText(model)
 
     def _vendor_changed(self, name):
         p = PRESETS.get(name)

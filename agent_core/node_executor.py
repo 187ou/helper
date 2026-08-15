@@ -1,10 +1,10 @@
-"""各任务节点执行器（LLM 驱动）。"""
-import json
+"""各任务节点执行器（LLM 驱动），含校验重试。"""
 import logging
 import time
 
 from agent_core.task_parser import TaskStep
 from agent_core.llm_client import chat
+from agent_core.result_validator import validate_and_retry
 
 logger = logging.getLogger(__name__)
 
@@ -18,20 +18,12 @@ _EXECUTE_SYSTEM_PROMPT = """你是一个任务执行助手。你会收到一个�
 
 
 def execute_node(step: TaskStep, state: dict) -> dict:
-    """执行单个节点，返回**本步骤的增量结果**（非累积列表）。
-
-    LangGraph 的 operator.add reducer 会自动合并各节点返回的增量。
-    """
+    """执行单个节点，含校验重试。"""
     logger.info("[节点 %d] %s", step.index, step.name)
-
-    # 本步骤新增的日志
     new_logs = [f"[{step.index}] {step.name}: {step.description}"]
-    # 本步骤的 step_result
     step_result = None
-
     start = time.time()
 
-    # 构建上下文
     context = _build_context(step, state)
 
     try:
@@ -40,12 +32,18 @@ def execute_node(step: TaskStep, state: dict) -> dict:
             {"role": "user", "content": context},
         ], temperature=0.5)
 
-        step_result = {
-            "index": step.index,
-            "name": step.name,
-            "result": result,
-        }
-        new_logs.append(f"  → {result[:100]}...")
+        # 校验 + 自动重试
+        validated, passed = validate_and_retry(result, {
+            "step_desc": step.description,
+            "task_text": state.get("task_text", ""),
+        })
+        if not passed:
+            logger.warning("[节点 %d] 校验未通过，使用最后一次输出", step.index)
+            new_logs.append(f"  ⚠️ 校验未通过，使用纠错后输出")
+
+        step_result = {"index": step.index, "name": step.name, "result": validated}
+        new_logs.append(f"  → {validated[:100]}...")
+        result = validated
     except Exception as e:
         logger.error("[节点 %d] 执行异常: %s", step.index, e)
         new_logs.append(f"  → [异常] {e}")
@@ -53,7 +51,6 @@ def execute_node(step: TaskStep, state: dict) -> dict:
     elapsed = time.time() - start
     logger.info("[节点 %d] 完成，耗时 %.2fs", step.index, elapsed)
 
-    # 返回增量（LangGraph reducer 负责合并）
     update: dict = {
         "logs": new_logs,
         "completed_steps": [step.index],

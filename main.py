@@ -1,9 +1,8 @@
 """程序入口：托盘启动、全局初始化。"""
 import os
 import sys
-import logging
 
-# 解决 Windows 控制台 GBK 编码问题（LLM 返回 emoji/特殊字符）
+# 解决 Windows 控制台 GBK 编码问题
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -12,6 +11,8 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 
 from PyQt6.QtWidgets import QApplication
 
+import logging
+from core.logging import setup_logging
 from config.path_config import ensure_dirs, APP_LOG_PATH
 from config.settings import load_config
 from memory_store.sqlite_db import init_db
@@ -20,21 +21,8 @@ from gui.tray_icon import TrayIcon
 from gui.style import GLOBAL_QSS
 
 
-def setup_logging() -> None:
-    """配置日志：文件 + 控制台。"""
-    log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    handlers: list[logging.Handler] = [logging.StreamHandler()]
-    try:
-        from pathlib import Path
-        Path(APP_LOG_PATH).parent.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(APP_LOG_PATH, encoding="utf-8"))
-    except OSError:
-        pass
-    logging.basicConfig(level=logging.INFO, format=log_format, handlers=handlers)
-
-
 def main() -> int:
-    setup_logging()
+    setup_logging(level="INFO", log_file=str(APP_LOG_PATH))
     logger = logging.getLogger("main")
     logger.info("═══ 桌面智能助手启动 ═══")
 

@@ -1,95 +1,143 @@
-"""运行模式、开机自启、提醒配置。读写 user_data/user_config.json。"""
-import json
+"""配置管理：OmegaConf 结构化加载，对外保持兼容接口。"""
 import logging
+from pathlib import Path
 from typing import Any
 
+from omegaconf import OmegaConf
+
+from config.conf_schema import AppConfig
 from config.path_config import USER_CONFIG_PATH, ensure_dirs
-from config.app_const import RunMode
 
 logger = logging.getLogger(__name__)
 
-# 默认配置
-DEFAULT_CONFIG: dict[str, Any] = {
-    "run_mode": RunMode.ONLINE.value,
-    "auto_start": False,
-    "remind_sedentary": True,
-    "remind_drink_water": True,
-    "sedentary_interval_min": 60,
-    "drink_water_interval_min": 45,
-    # LLM API 配置
-    "api_base_url": "https://api.longcat.chat/openai/v1",
-    "api_key": "",
-    "model_name": "LongCat-2.0",
-}
+# ── YAML 配置路径 ──
+YAML_PATH = Path(__file__).parent.parent / "conf" / "app_config.yaml"
 
-_config_cache: dict[str, Any] | None = None
+# 全局配置实例
+_config: AppConfig | None = None
 
 
-def load_config() -> dict[str, Any]:
-    """加载配置，首次使用默认值并写入文件。"""
-    global _config_cache
-    if _config_cache is not None:
-        return _config_cache
+def load_config() -> AppConfig:
+    """加载配置：schema 默认值 + YAML 覆盖 + JSON 用户配置覆盖。"""
+    global _config
+    if _config is not None:
+        return _config
 
-    ensure_dirs()
+    # 1. schema 提供默认值
+    schema = OmegaConf.structured(AppConfig)
+
+    # 2. YAML 文件覆盖
+    if YAML_PATH.exists():
+        yaml_cfg = OmegaConf.load(str(YAML_PATH))
+        schema = OmegaConf.merge(schema, yaml_cfg)
+
+    # 3. JSON 用户配置覆盖（向后兼容）
     if USER_CONFIG_PATH.exists():
         try:
+            import json
             with open(USER_CONFIG_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            # 合并新增默认字段
-            merged = {**DEFAULT_CONFIG, **data}
-            _config_cache = merged
-            return merged
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning("配置文件读取失败，使用默认配置: %s", e)
+                json_cfg = json.load(f)
+            # 扁平 key → 嵌套结构
+            nested = _flat_to_nested(json_cfg)
+            schema = OmegaConf.merge(schema, nested)
+        except Exception as e:
+            logger.warning("JSON 配置读取失败: %s", e)
 
-    _config_cache = dict(DEFAULT_CONFIG)
-    save_config(_config_cache)
-    return _config_cache
+    _config = OmegaConf.to_object(schema)
+    logger.info("配置加载完成: run_mode=%s, model=%s", _config.run_mode, _config.llm.model_name)
+    return _config
 
 
-def save_config(config: dict[str, Any]) -> None:
-    """持久化配置到 JSON。"""
-    global _config_cache
-    ensure_dirs()
-    with open(USER_CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-    _config_cache = config
+def _flat_to_nested(flat: dict) -> dict:
+    """将扁平 key 转为嵌套结构（向后兼容）。"""
+    nested = {}
+    for k, v in flat.items():
+        if k == "api_base_url":
+            nested.setdefault("llm", {})["base_url"] = v
+        elif k == "api_key":
+            nested.setdefault("llm", {})["api_key"] = v
+        elif k == "model_name":
+            nested.setdefault("llm", {})["model_name"] = v
+        elif k == "run_mode":
+            nested["run_mode"] = v
+        elif k == "auto_start":
+            nested["auto_start"] = v
+        elif k in ("remind_sedentary", "remind_drink_water"):
+            nested.setdefault("reminder", {})[k] = v
+        elif k in ("sedentary_interval_min", "drink_water_interval_min"):
+            nested.setdefault("reminder", {})[k] = v
+    return nested
 
+
+def reload_config() -> AppConfig:
+    """强制重新加载配置。"""
+    global _config
+    _config = None
+    return load_config()
+
+
+# ── 兼容接口（保持原有调用方式不变） ──
 
 def get(key: str, default: Any = None) -> Any:
-    """读取单个配置项。"""
-    return load_config().get(key, default)
+    """读取配置项（支持点号路径，如 "llm.model_name"）。"""
+    cfg = load_config()
+    parts = key.split(".")
+    obj = cfg
+    for p in parts:
+        if isinstance(obj, dict):
+            obj = obj.get(p, default)
+        else:
+            obj = getattr(obj, p, default)
+        if obj is None:
+            return default
+    return obj
 
 
 def set(key: str, value: Any) -> None:
-    """写入单个配置项并保存。"""
-    cfg = load_config()
-    cfg[key] = value
-    save_config(cfg)
+    """写入配置项到 JSON（向后兼容）。"""
+    ensure_dirs()
+    import json
+    if USER_CONFIG_PATH.exists():
+        with open(USER_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        data = {}
+    data[key] = value
+    with open(USER_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    reload_config()
 
 
-def get_run_mode() -> RunMode:
-    return RunMode(get("run_mode", RunMode.ONLINE.value))
+def get_run_mode() -> str:
+    return get("run_mode", "online")
 
 
-def set_run_mode(mode: RunMode) -> None:
-    set("run_mode", mode.value)
+def set_run_mode(mode: str) -> None:
+    set("run_mode", mode)
 
 
-# ── LLM API 配置 ──
 def get_api_base_url() -> str:
-    return get("api_base_url", "https://api.longcat.chat/openai/v1")
+    return get("llm.base_url", "https://api.longcat.chat/openai/v1")
 
 
 def get_api_key() -> str:
-    return get("api_key", "")
+    return get("llm.api_key", "")
 
 
 def get_model_name() -> str:
-    return get("model_name", "LongCat-2.0")
+    return get("llm.model_name", "LongCat-2.0")
 
 
 def is_llm_configured() -> bool:
-    """检查 LLM 是否已配置好（有 key 和 base url）。"""
     return bool(get_api_key()) and bool(get_api_base_url())
+
+
+def get_kb_config() -> dict:
+    """获取知识库配置。"""
+    cfg = load_config()
+    return {
+        "chunk_size": cfg.kb.chunk_size,
+        "chunk_overlap": cfg.kb.chunk_overlap,
+        "top_k": cfg.kb.top_k,
+        "hybrid_alpha": cfg.kb.hybrid_alpha,
+    }

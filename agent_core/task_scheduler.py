@@ -3,10 +3,11 @@ import logging
 import time
 from typing import Any
 
+from core.context import new_task_id, set_task_id
 from agent_core.task_parser import parse, detect_task_type
 from agent_core.graph_builder import build_graph
 from evolution_core.judge_score import score_work, score_life, combined_score
-from memory_store.sqlite_db import get_conn, now_str
+from memory_store.sqlite_db import now_str
 from config.app_const import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -14,7 +15,12 @@ logger = logging.getLogger(__name__)
 
 def run(task_text: str) -> dict[str, Any]:
     """执行完整任务链路，返回结果字典。"""
+    # 注入 task_id，后续所有日志自动携带
+    task_id = new_task_id()
+    set_task_id(task_id)
+
     result: dict[str, Any] = {
+        "task_id": task_id,
         "task_text": task_text,
         "steps": [],
         "status": TaskStatus.RUNNING.value,
@@ -23,6 +29,8 @@ def run(task_text: str) -> dict[str, Any]:
         "work_score": 0,
         "life_score": 0,
     }
+
+    logger.info("任务开始: %s", task_text[:50])
 
     # 1. 拆解
     steps = parse(task_text)
@@ -61,11 +69,12 @@ def run(task_text: str) -> dict[str, Any]:
         result["cost_time"] = time.time() - start
         result["status"] = TaskStatus.SUCCESS.value
         result["logs"].append(f"执行完成，总耗时 {result['cost_time']:.2f}s")
+        logger.info("任务完成: 耗时 %.2fs", result["cost_time"])
     except Exception as e:
         result["status"] = TaskStatus.FAIL.value
         result["cost_time"] = time.time() - start
         result["logs"].append(f"执行异常: {e}")
-        logger.exception("任务执行异常")
+        logger.exception("任务执行异常: %s", e)
 
     # 4. 演化打分
     result["work_score"] = score_work(result)
@@ -78,6 +87,8 @@ def run(task_text: str) -> dict[str, Any]:
     # 6. 持久化到数据库
     _save_task(result, task_type)
 
+    logger.info("任务结束: status=%s, work=%.1f, life=%.1f",
+                result["status"], result["work_score"], result["life_score"])
     return result
 
 
@@ -119,22 +130,17 @@ def _evolution_loop(task_text: str, result: dict) -> None:
 def _save_task(result: dict, task_type) -> None:
     """保存任务记录到数据库。"""
     try:
-        conn = get_conn()
-        conn.execute(
-            """INSERT INTO task_list (task_type, task_content, task_steps, status, cost_time, work_score, life_score)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                task_type.value if hasattr(task_type, 'value') else str(task_type),
-                result["task_text"],
-                str(result["steps"]),
-                result["status"],
-                result["cost_time"],
-                result["work_score"],
-                result["life_score"],
-            ),
+        from memory_store.repositories import TaskRepository
+        repo = TaskRepository()
+        repo.save(
+            task_type=task_type.value if hasattr(task_type, 'value') else str(task_type),
+            content=result["task_text"],
+            steps=result["steps"],
+            status=result["status"],
+            cost_time=result["cost_time"],
+            work_score=result["work_score"],
+            life_score=result["life_score"],
         )
-        conn.commit()
-        conn.close()
         logger.info("任务记录已保存")
     except Exception as e:
         logger.warning("任务保存失败: %s", e)

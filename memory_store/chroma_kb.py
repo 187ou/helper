@@ -185,17 +185,28 @@ def add_document(file_path: str, text: str, category: str, file_name: str = "") 
     return {"status": "ok", "chunks": len(chunks), "category": category}
 
 
-def search(query: str, category: str = "", top_k: int = 5) -> list[dict[str, Any]]:
-    """语义检索。
+def search(query: str, category: str = "", top_k: int = 5, hybrid: bool = True) -> list[dict[str, Any]]:
+    """检索（支持混合检索）。
 
     Args:
         query: 查询文本
         category: 分区 key，空则全库搜索
         top_k: 返回条数
+        hybrid: 是否启用 BM25 + 向量混合检索
     """
     if not query.strip():
         return []
 
+    if hybrid:
+        try:
+            from memory_store.bm25_index import hybrid_search
+            from config.settings import get_kb_config
+            kb_cfg = get_kb_config()
+            return hybrid_search(query, category=category, top_k=top_k, alpha=kb_cfg.get("hybrid_alpha", 0.5))
+        except Exception as e:
+            logger.warning("混合检索失败，回退到纯向量: %s", e)
+
+    # 纯向量检索
     query_vec = embed_texts([query])
     if not query_vec:
         return []
@@ -226,7 +237,6 @@ def search(query: str, category: str = "", top_k: int = 5) -> list[dict[str, Any
         except Exception as e:
             logger.warning("检索 %s 失败: %s", cat_key, e)
 
-    # 按相似度排序
     results.sort(key=lambda x: x["score"], reverse=True)
     return results[:top_k]
 

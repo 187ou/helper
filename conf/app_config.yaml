@@ -1,0 +1,30 @@
+# 桌面智能助手配置文件
+# 修改后重启生效
+
+run_mode: online        # online / offline
+auto_start: false
+
+llm:
+  model_name: LongCat-2.0
+  base_url: https://api.longcat.chat/openai/v1
+  api_key: ""           # 在此填入你的 API Key
+  timeout: 60
+  max_retries: 2
+
+kb:
+  chunk_size: 512
+  chunk_overlap: 128
+  top_k: 5
+  hybrid_alpha: 0.5     # 向量检索权重 (0=纯BM25, 1=纯向量)
+
+window:
+  width: 980
+  height: 660
+  min_width: 820
+  min_height: 560
+
+reminder:
+  remind_sedentary: true
+  remind_drink_water: true
+  sedentary_interval_min: 60
+  drink_water_interval_min: 45

@@ -9,6 +9,7 @@ from agent_core.graph_builder import build_graph
 from evolution_core.judge_score import score_work, score_life, combined_score
 from memory_store.sqlite_db import now_str
 from config.app_const import TaskStatus
+from service.task_service import create_task, save_dag, get_task
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,14 @@ def run(task_text: str) -> dict[str, Any]:
 
 def _evolution_loop(task_text: str, result: dict) -> None:
     """自演化闭环：打分 → 流程优化 → 权重迭代 → 模板固化 → 日志记录。"""
+    # 检查演化总开关
+    try:
+        from service.evolution_config_service import is_evolution_enabled
+        if not is_evolution_enabled():
+            return
+    except Exception:
+        pass
+
     try:
         score = combined_score(
             result["work_score"], result["life_score"],
@@ -106,22 +115,31 @@ def _evolution_loop(task_text: str, result: dict) -> None:
         evolve_from_task(task_text, score)
 
         # 流程优化（步骤 > 2 时）
-        if len(result.get("steps", [])) > 2:
-            from evolution_core.flow_optimize import optimize
-            from evolution_core.evo_log import log_flow_optimize
-            old_steps = result["steps"]
-            optimized = optimize(old_steps)
-            if len(optimized) < len(old_steps):
-                log_flow_optimize(old_steps, optimized)
-                result["logs"].append(f"流程优化: {len(old_steps)}步 → {len(optimized)}步")
+        try:
+            from service.evolution_config_service import get_config
+            if get_config("enable_auto_optimize") and len(result.get("steps", [])) > 2:
+                from evolution_core.flow_optimize import optimize
+                from evolution_core.evo_log import log_flow_optimize
+                old_steps = result["steps"]
+                optimized = optimize(old_steps)
+                if len(optimized) < len(old_steps):
+                    log_flow_optimize(old_steps, optimized)
+                    result["logs"].append(f"流程优化: {len(old_steps)}步 → {len(optimized)}步")
+        except Exception as e:
+            logger.warning("流程优化异常: %s", e)
 
         # 模板固化（高频任务）
-        from evolution_core.template_save import check_and_save_template, list_templates
-        from evolution_core.evo_log import log_template_save
-        tpl = check_and_save_template(task_text, result.get("steps", []))
-        if tpl:
-            log_template_save(tpl["name"], tpl["freq"])
-            result["logs"].append(f"固化模板: {tpl['name']}")
+        try:
+            from service.evolution_config_service import get_config
+            if get_config("enable_template_save"):
+                from evolution_core.template_save import check_and_save_template
+                from evolution_core.evo_log import log_template_save
+                tpl = check_and_save_template(task_text, result.get("steps", []))
+                if tpl:
+                    log_template_save(tpl["name"], tpl["freq"])
+                    result["logs"].append(f"固化模板: {tpl['name']}")
+        except Exception as e:
+            logger.warning("模板固化异常: %s", e)
 
     except Exception as e:
         logger.warning("演化闭环异常: %s", e)
@@ -179,6 +197,39 @@ def run_stream(task_text: str) -> Generator[dict, None, None]:
     cost_time = time.time() - start
     yield {"type": "log", "data": {"message": f"执行完成，总耗时 {cost_time:.2f}s"}}
     yield {"type": "done", "data": {"cost_time": cost_time}}
+
+    # 持久化任务 + DAG
+    try:
+        task = create_task(
+            content=task_text,
+            task_type=detect_task_type(task_text).value,
+            steps=[{"index": s.index, "name": s.name, "desc": s.description, "type": s.step_type} for s in steps],
+            source="ai",
+        )
+        if task:
+            task_id = task["id"]
+            # 构建 DAG：节点状态从 step_results 获取
+            node_status = {}
+            for r in step_results:
+                node_status[f"step_{r['index']}"] = "success" if r.get("result") else "failed"
+            dag_nodes = []
+            dag_edges = []
+            for i, s in enumerate(steps):
+                nid = f"step_{s.index}"
+                dag_nodes.append({
+                    "id": nid,
+                    "label": s.name,
+                    "desc": s.description,
+                    "status": node_status.get(nid, "pending"),
+                    "step_type": s.step_type,
+                })
+                if i > 0:
+                    prev_nid = f"step_{steps[i-1].index}"
+                    dag_edges.append({"source": prev_nid, "target": nid})
+            save_dag(task_id, {"nodes": dag_nodes, "edges": dag_edges})
+            logger.info("任务 #%d 已持久化，DAG 节点 %d 个", task_id, len(dag_nodes))
+    except Exception as e:
+        logger.warning("持久化任务失败: %s", e)
 
 
 def _execute_node_streaming(step, state) -> Generator[dict, None, dict]:

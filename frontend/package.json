@@ -10,8 +10,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ant-design/icons": "^6.3.2",
+    "@types/dagre": "^0.7.54",
+    "@xyflow/react": "^12.11.3",
+    "antd": "^6.6.0",
+    "dagre": "^0.8.5",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.2"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

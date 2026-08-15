@@ -50,4 +50,101 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(data),
   }),
+
+  // 任务管理
+  getTaskStats: () => request('/task/stats'),
+  getTasks: (params = '') => request(`/task/list${params}`),
+  getTask: (id) => request(`/task/${id}`),
+  createTask: (data) => request('/task/create', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+  updateTask: (id, data) => request(`/task/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  }),
+  changeTaskStatus: (id, status) => request(`/task/${id}/status`, {
+    method: 'POST',
+    body: JSON.stringify({ status }),
+  }),
+  deleteTask: (id) => request(`/task/${id}`, { method: 'DELETE' }),
+  getTaskDag: (id) => request(`/task/${id}/dag`),
+  getTaskOptions: () => request('/task/meta/options'),
+
+  // 全局检索
+  globalSearch: (q) => request(`/search/?q=${encodeURIComponent(q)}`),
+
+  // 行为采集
+  logBehavior: (eventType, data) => request('/behavior/log', {
+    method: 'POST',
+    body: JSON.stringify({ event_type: eventType, event_data: data }),
+  }),
+  getBehaviorStats: () => request('/behavior/stats'),
+
+  // 演化配置
+  getEvoConfigs: () => request('/evo-config/'),
+  updateEvoConfig: (key, value) => request(`/evo-config/${key}`, {
+    method: 'PUT',
+    body: JSON.stringify({ value }),
+  }),
+  resetEvoConfigs: () => request('/evo-config/reset', { method: 'POST' }),
+
+  // 职场办公 - 文书
+  genWeekly: (data) => request('/work/doc/weekly', { method: 'POST', body: JSON.stringify(data) }),
+  genMonthly: (data) => request('/work/doc/monthly', { method: 'POST', body: JSON.stringify(data) }),
+  genMeeting: (data) => request('/work/doc/meeting', { method: 'POST', body: JSON.stringify(data) }),
+  polishDoc: (data) => request('/work/doc/polish', { method: 'POST', body: JSON.stringify(data) }),
+  saveDoc: (data) => request('/work/doc/save', { method: 'POST', body: JSON.stringify(data) }),
+
+  // 职场办公 - Excel
+  analyzeExcel: (data) => request('/work/excel/analyze', { method: 'POST', body: JSON.stringify(data) }),
+  mergeExcel: (data) => request('/work/excel/merge', { method: 'POST', body: JSON.stringify(data) }),
+  excelChart: (data) => request('/work/excel/chart', { method: 'POST', body: JSON.stringify(data) }),
+
+  // 职场办公 - 报销
+  analyzeReimbursement: (data) => request('/work/reimbursement/analyze', { method: 'POST', body: JSON.stringify(data) }),
+  genReimbursementReport: (data) => request('/work/reimbursement/report', { method: 'POST', body: JSON.stringify(data) }),
+
+  // 职场办公 - 归档
+  scanDesktop: () => request('/work/archive/desktop'),
+  scanArchive: () => request('/work/archive/scan'),
+  classifyFiles: (files) => request('/work/archive/classify', { method: 'POST', body: JSON.stringify({ files }) }),
+  batchRename: (files, rule) => request('/work/archive/rename', { method: 'POST', body: JSON.stringify({ files, rule }) }),
+  moveToArchive: (src, category) => request('/work/archive/move', { method: 'POST', body: JSON.stringify({ src, category }) }),
+
+  // 职场办公 - 项目
+  getProjects: () => request('/work/project/list'),
+  getProject: (id) => request(`/work/project/${id}`),
+  createProject: (data) => request('/work/project/create', { method: 'POST', body: JSON.stringify(data) }),
+  updateProject: (id, data) => request(`/work/project/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteProject: (id) => request(`/work/project/${id}`, { method: 'DELETE' }),
+  toggleMilestone: (id, index) => request(`/work/project/${id}/milestone/toggle`, { method: 'POST', body: JSON.stringify({ index }) }),
+
+  // 生活健康 - 记账
+  getBills: (month = '') => request(`/life/bill/list?month=${month}`),
+  addBill: (data) => request('/life/bill/add', { method: 'POST', body: JSON.stringify(data) }),
+  deleteBill: (id) => request(`/life/bill/${id}`, { method: 'DELETE' }),
+  getBillSummary: (month = '') => request(`/life/bill/summary?month=${month}`),
+  getBillCategory: (month = '') => request(`/life/bill/category?month=${month}`),
+  getBillTrend: (months = 6) => request(`/life/bill/trend?months=${months}`),
+
+  // 生活健康 - 健康
+  getHealthReminders: () => request('/life/health/reminders'),
+  updateHealthReminders: (data) => request('/life/health/reminders', { method: 'PUT', body: JSON.stringify(data) }),
+  getHealthRecords: (type = '') => request(`/life/health/records?record_type=${type}`),
+  addHealthRecord: (data) => request('/life/health/record', { method: 'POST', body: JSON.stringify(data) }),
+  getHealthStats: () => request('/life/health/stats'),
+
+  // 生活健康 - 资料归档
+  getArchives: (category = '', keyword = '') => request(`/life/archive/list?category=${category}&keyword=${keyword}`),
+  addArchive: (data) => request('/life/archive/add', { method: 'POST', body: JSON.stringify(data) }),
+  deleteArchive: (id) => request(`/life/archive/${id}`, { method: 'DELETE' }),
+  getArchiveCategories: () => request('/life/archive/categories'),
+
+  // 生活健康 - 习惯打卡
+  getHabits: () => request('/life/habit/list'),
+  createHabit: (data) => request('/life/habit/create', { method: 'POST', body: JSON.stringify(data) }),
+  checkinHabit: (id, data) => request(`/life/habit/${id}/checkin`, { method: 'POST', body: JSON.stringify(data) }),
+  deleteHabit: (id) => request(`/life/habit/${id}`, { method: 'DELETE' }),
+  getHabitCalendar: (id, month = '') => request(`/life/habit/${id}/calendar?month=${month}`),
 }

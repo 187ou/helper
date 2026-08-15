@@ -7,6 +7,32 @@ from config.path_config import DB_PATH, ensure_dirs
 
 logger = logging.getLogger(__name__)
 
+# ── A/B 测试表 DDL ──
+_AB_TEST_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ab_experiment (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    experiment_id TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    variants TEXT NOT NULL,
+    metric TEXT DEFAULT 'score',
+    split_ratio REAL DEFAULT 0.5,
+    status TEXT DEFAULT 'running',
+    winner TEXT DEFAULT '',
+    create_time TEXT DEFAULT (datetime('now', 'localtime')),
+    end_time TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS ab_result (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    experiment_id TEXT NOT NULL,
+    variant_name TEXT NOT NULL,
+    metric_value REAL DEFAULT 0,
+    task_id INTEGER DEFAULT 0,
+    create_time TEXT DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
 # ── 建表 DDL ──
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS task_list (
@@ -255,10 +281,30 @@ def init_db() -> None:
                     if "already exists" not in str(e):
                         raise
         _migrate(conn)
+        # 初始化 A/B 测试表
+        _init_ab_tables(conn)
         conn.commit()
         logger.info("数据库初始化完成: %s", DB_PATH)
     finally:
         conn.close()
+
+
+def _init_ab_tables(conn: sqlite3.Connection) -> None:
+    """初始化 A/B 测试表。"""
+    try:
+        # 逐条执行（executescript 不能在 execute 失败后继续）
+        for statement in _AB_TEST_SCHEMA.split(";"):
+            stmt = statement.strip()
+            if stmt:
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError as e:
+                    if "already exists" not in str(e):
+                        raise
+                except sqlite3.DatabaseError:
+                    pass  # 忽略其他错误
+    except Exception as e:
+        logger.warning("A/B 测试表初始化: %s", e)
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

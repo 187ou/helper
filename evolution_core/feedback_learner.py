@@ -246,20 +246,42 @@ def _learn_from_feedback(
     task_type: str,
     diff_summary: str,
 ) -> None:
-    """分析反馈内容，提炼偏好规则。"""
+    """分析反馈内容，提炼偏好规则（LLM 优先 + 规则降级）。"""
     if feedback_type == "praise":
         _reinforce_preference(f"type:{task_type}:style", _detect_style(original), task_type)
         return
 
     if feedback_type in ("modify", "reject"):
         if original and modified:
-            diff = _analyze_modification(original, modified)
-            if diff:
-                _store_preference(diff["key"], diff["value"], diff["evidence"], task_type)
+            # 优先使用深度分析（LLM）
+            diff = _analyze_modification_deep(original, modified, task_type)
+            if diff and diff.get("preference_rule"):
+                rule = diff["preference_rule"]
+                _store_preference(
+                    rule.get("key", "unknown"),
+                    rule.get("value", ""),
+                    rule.get("evidence", diff.get("intent", "")),
+                    task_type,
+                )
+
+
+def _analyze_modification_deep(original: str, modified: str, task_type: str = "") -> dict | None:
+    """深度分析修改（LLM 优先 + 规则降级）。"""
+    # 尝试 LLM 分析
+    try:
+        from evolution_core.deep_feedback import analyze_modification_deep
+        result = analyze_modification_deep(original, modified, task_type)
+        if result:
+            return result
+    except Exception:
+        pass
+
+    # 降级：规则分析
+    return _analyze_modification(original, modified)
 
 
 def _analyze_modification(original: str, modified: str) -> dict | None:
-    """分析用户修改内容，提炼偏好。"""
+    """分析用户修改内容，提炼偏好（规则版）。"""
     if original == modified:
         return None
 

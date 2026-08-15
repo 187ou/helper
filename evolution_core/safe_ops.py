@@ -73,16 +73,20 @@ def safe_db_write(default_return: Any = None) -> Callable:
 
 # ── JSON 安全操作 ──
 
-def safe_json_loads(text: str, default: Any = None) -> Any:
+def safe_json_loads(text: Any, default: Any = None) -> Any:
     """安全解析 JSON。
 
     边缘处理：
     - None/空字符串 → 返回 default
     - 非法 JSON → 返回 default
+    - 已是 list/dict → 直接返回（幂等性）
     - 非字符串输入 → 尝试 str() 后解析
     """
     if text is None:
         return default
+    # 幂等性：如果已经是解析后的对象，直接返回
+    if isinstance(text, (list, dict)):
+        return text
     if not isinstance(text, str):
         try:
             text = str(text)

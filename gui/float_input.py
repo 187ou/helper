@@ -1,4 +1,4 @@
-"""悬浮输入框。"""
+"""悬浮输入框：极简。"""
 import logging
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLineEdit, QPushButton
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal
@@ -15,22 +15,22 @@ class FloatInput(QWidget):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(280, 44)
+        self.setFixedSize(260, 42)
         self._drag = None
         self._build()
 
     def _build(self):
-        self.setStyleSheet(f"background: {BG}; border: 1px solid {ACCENT}; border-radius: 22px;")
-        l = QHBoxLayout(self); l.setContentsMargins(14, 4, 8, 4)
-        self.input = QLineEdit(); self.input.setPlaceholderText("输入指令，回车提交...")
-        self.input.setStyleSheet(f"border: none; font-size: 13px; color: {TEXT}; background: transparent;")
+        self.setStyleSheet(f"background:{BG}; border:1px solid {BORDER}; border-radius:21px;")
+        l = QHBoxLayout(self); l.setContentsMargins(14, 3, 6, 3)
+        self.input = QLineEdit(); self.input.setPlaceholderText("输入指令...")
+        self.input.setStyleSheet(f"border:none; background:transparent; color:{TEXT};")
         self.input.returnPressed.connect(self._submit)
         l.addWidget(self.input)
-        self.btn = QPushButton("→"); self.btn.setFixedSize(28, 28)
-        self.btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.btn.setStyleSheet(f"background: {ACCENT}; color: white; border-radius: 14px; font-weight: bold;")
-        self.btn.clicked.connect(self._submit)
-        l.addWidget(self.btn)
+        b = QPushButton("→"); b.setFixedSize(26, 26)
+        b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        b.setStyleSheet(f"background:{ACCENT}; color:#fff; border-radius:13px; font-weight:bold;")
+        b.clicked.connect(self._submit)
+        l.addWidget(b)
 
     def _submit(self):
         t = self.input.text().strip()

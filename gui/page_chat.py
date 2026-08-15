@@ -1,154 +1,93 @@
-"""对话页面。"""
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton,
-    QLabel, QProgressBar, QFrame
-)
+"""对话页：极简。"""
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QLabel, QProgressBar
 from PyQt6.QtCore import QThread, pyqtSignal
-
 from agent_core.task_scheduler import run as run_task
 from config.settings import is_llm_configured
-from gui.style import (
-    BG, BG_INPUT, BG_SIDEBAR, ACCENT, SUCCESS, DANGER,
-    TEXT, TEXT_SEC, TEXT_MUTED, BORDER, title_font, mono_font
-)
+from gui.style import BG, TEXT, TEXT_SEC, TEXT_MUTED, BORDER, ACCENT
 
 
-class TaskWorker(QThread):
-    finished = pyqtSignal(object)
-
-    def __init__(self, task_text: str):
-        super().__init__()
-        self.task_text = task_text
-
-    def run(self):
-        result = run_task(self.task_text)
-        self.finished.emit(result)
+class Worker(QThread):
+    done = pyqtSignal(object)
+    def __init__(self, text): super().__init__(); self.text = text
+    def run(self): self.done.emit(run_task(self.text))
 
 
 class PageChat(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._worker: TaskWorker | None = None
-        self._build_ui()
+        self.w = None
+        l = QVBoxLayout(self)
+        l.setContentsMargins(28, 24, 28, 24); l.setSpacing(14)
 
-    def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(12)
+        h = QLabel("对话")
+        h.setStyleSheet(f"font-size:18px; font-weight:bold; color:{TEXT};")
+        l.addWidget(h)
 
-        header = QLabel("💬 智能对话")
-        header.setFont(title_font(17))
-        layout.addWidget(header)
-
-        sub = QLabel("输入自然语言指令，AI 自动拆解并执行")
-        sub.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px; margin-bottom: 4px;")
-        layout.addWidget(sub)
-
-        # DAG
-        dag = QFrame()
-        dag.setStyleSheet(f"background: {BG_SIDEBAR}; border: 1px solid {BORDER}; border-radius: 10px;")
-        dl = QVBoxLayout(dag)
-        dl.setContentsMargins(14, 12, 14, 12)
-        dh = QLabel("📊 任务流程")
-        dh.setStyleSheet(f"color: {TEXT_SEC}; font-weight: 500; font-size: 12px;")
-        dl.addWidget(dh)
-
-        self.dag_label = QLabel("等待任务输入...")
-        self.dag_label.setWordWrap(True)
-        self.dag_label.setFont(mono_font(11))
-        self.dag_label.setStyleSheet(f"color: {TEXT_MUTED}; padding: 4px 0; line-height: 1.6;")
-        dl.addWidget(self.dag_label)
-
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        self.progress.setTextVisible(False)
-        dl.addWidget(self.progress)
-        layout.addWidget(dag)
+        s = QLabel("输入指令，AI 自动执行")
+        s.setStyleSheet(f"color:{TEXT_MUTED}; font-size:12px; margin-bottom:8px;")
+        l.addWidget(s)
 
         # 日志
-        log = QFrame()
-        log.setStyleSheet(f"background: {BG_SIDEBAR}; border: 1px solid {BORDER}; border-radius: 10px;")
-        ll = QVBoxLayout(log)
-        ll.setContentsMargins(14, 12, 14, 12)
-        lh = QLabel("📋 执行日志")
-        lh.setStyleSheet(f"color: {TEXT_SEC}; font-weight: 500; font-size: 12px;")
-        ll.addWidget(lh)
-
-        self.history = QTextEdit()
-        self.history.setReadOnly(True)
-        self.history.setPlaceholderText("执行日志...")
-        self.history.setMinimumHeight(150)
-        self.history.setStyleSheet(f"""
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setPlaceholderText("执行日志...")
+        self.log.setMinimumHeight(200)
+        self.log.setStyleSheet(f"""
             QTextEdit {{
-                background: {BG}; border: 1px solid {BORDER};
-                border-radius: 8px; padding: 10px;
+                background:#fafafa; border:1px solid {BORDER};
+                border-radius:8px; padding:12px; line-height:1.6;
             }}
         """)
-        ll.addWidget(self.history)
-        layout.addWidget(log, stretch=1)
+        l.addWidget(self.log, 1)
+
+        # 进度
+        self.prog = QProgressBar()
+        self.prog.setRange(0, 100); self.prog.setValue(0)
+        self.prog.setTextVisible(False)
+        l.addWidget(self.prog)
 
         # 输入
-        inp = QFrame()
-        inp.setStyleSheet(f"background: {BG_SIDEBAR}; border: 1px solid {BORDER}; border-radius: 10px;")
-        il = QHBoxLayout(inp)
-        il.setContentsMargins(10, 10, 10, 10)
-
-        self.input_box = QTextEdit()
-        self.input_box.setPlaceholderText("输入指令...")
-        self.input_box.setMaximumHeight(60)
-        il.addWidget(self.input_box)
+        inp = QHBoxLayout()
+        self.input = QTextEdit()
+        self.input.setPlaceholderText("输入指令...")
+        self.input.setMaximumHeight(56)
+        self.input.setStyleSheet(f"""
+            QTextEdit {{
+                background:#fafafa; border:1px solid {BORDER};
+                border-radius:6px; padding:8px 12px;
+            }}
+            QTextEdit:focus {{ border-color:{ACCENT}; background:#fff; }}
+        """)
+        inp.addWidget(self.input)
 
         btns = QVBoxLayout()
         self.send_btn = QPushButton("发送")
-        self.send_btn.setFixedSize(60, 36)
-        self.send_btn.clicked.connect(self._on_send)
+        self.send_btn.setFixedSize(64, 34)
+        self.send_btn.clicked.connect(self._send)
         btns.addWidget(self.send_btn)
+        inp.addLayout(btns)
+        l.addLayout(inp)
 
-        clr = QPushButton("清空")
-        clr.setProperty("class", "ghost")
-        clr.setFixedSize(60, 26)
-        clr.clicked.connect(lambda: (self.history.clear(), self.dag_label.setText("等待任务输入..."), self.progress.setValue(0)))
-        btns.addWidget(clr)
-        btns.addStretch()
-        il.addLayout(btns)
-        layout.addWidget(inp)
-
-    def _on_send(self):
-        text = self.input_box.toPlainText().strip()
-        if not text:
-            return
+    def _send(self):
+        t = self.input.toPlainText().strip()
+        if not t: return
         if not is_llm_configured():
-            self.history.append(f'<span style="color: {DANGER};">⚠️ 请先在「设置」页面配置 API Key</span>')
+            self.log.append('<span style="color:#dc2626;">⚠️ 请先在「设置」配置 API Key</span>')
             return
-        self.input_box.clear()
-        self.history.append(f'<b style="color: {ACCENT};">👤 {text}</b>')
-        self.send_btn.setEnabled(False)
-        self.send_btn.setText("执行中")
-        self.progress.setValue(0)
-        self.dag_label.setText("⏳ 正在拆解任务...")
-        self._worker = TaskWorker(text)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.start()
+        self.input.clear()
+        self.log.append(f"<b>{t}</b>")
+        self.send_btn.setEnabled(False); self.send_btn.setText("执行中")
+        self.prog.setValue(0)
+        self.w = Worker(t)
+        self.w.done.connect(self._done)
+        self.w.start()
 
-    def _on_finished(self, result: dict):
-        self.send_btn.setEnabled(True)
-        self.send_btn.setText("发送")
-        steps = result.get("steps", [])
-        lines = []
-        for i, s in enumerate(steps):
-            icon = "✅" if i < len(steps) - 1 else "🔄"
-            lines.append(f"  {icon} 步骤 {s['index']}: {s['name']}")
-        self.dag_label.setText("\n".join(lines) if lines else "无步骤")
+    def _done(self, r):
+        self.send_btn.setEnabled(True); self.send_btn.setText("发送")
+        for lg in r.get("logs", []):
+            self.log.append(f"  <span style='color:{TEXT_SEC};'>{lg}</span>")
+        self.log.append(f"<b>✓ 完成 · {r.get('cost_time', 0):.1f}s</b>")
+        self.prog.setValue(100)
 
-        for log in result.get("logs", []):
-            self.history.append(f"  <span style='color: {TEXT_SEC};'>{log}</span>")
-        sc = SUCCESS if result.get("status") == "success" else DANGER
-        self.history.append(
-            f"<b style='color: {sc};'>🤖 {result.get('status')} | 耗时 {result.get('cost_time', 0):.1f}s</b>"
-        )
-        self.progress.setValue(100)
-
-    def set_input_and_send(self, text: str):
-        self.input_box.setPlainText(text)
-        self._on_send()
+    def set_input_and_send(self, text):
+        self.input.setPlainText(text); self._send()

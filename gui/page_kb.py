@@ -1,146 +1,114 @@
-"""知识库管理。"""
+"""知识库：极简。"""
 import logging
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QPushButton, QHeaderView, QLabel, QLineEdit, QTextEdit,
-    QFileDialog, QInputDialog
+    QPushButton, QHeaderView, QLabel, QLineEdit, QTextEdit, QFileDialog, QInputDialog
 )
 from PyQt6.QtCore import QThread, pyqtSignal
 from memory_store.chroma_kb import add_document, search, list_documents, get_stats, COLLECTIONS, delete_document
 from config.app_const import KBCategory
-from gui.style import (
-    BG, BG_SIDEBAR, ACCENT, DANGER, TEXT_SEC, TEXT_MUTED, BORDER, title_font
-)
+from gui.style import TEXT, TEXT_SEC, TEXT_MUTED, BORDER, ACCENT, DANGER
 
 logger = logging.getLogger(__name__)
-KB_TREE = [("工作文档", KBCategory.WORK_DOC.value), ("合同票据", KBCategory.CONTRACT.value),
-           ("个人资料", KBCategory.PERSONAL.value), ("笔记", KBCategory.NOTE.value), ("账单", KBCategory.BILL.value)]
-SUPPORTED_EXT = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".csv"}
+KB = [("工作文档", KBCategory.WORK_DOC.value), ("合同", KBCategory.CONTRACT.value),
+      ("个人", KBCategory.PERSONAL.value), ("笔记", KBCategory.NOTE.value), ("账单", KBCategory.BILL.value)]
 
 
 class IndexWorker(QThread):
-    finished = pyqtSignal(dict)
-    def __init__(self, fp, cat):
-        super().__init__(); self.fp, self.cat = fp, cat
+    done = pyqtSignal(dict)
+    def __init__(self, fp, cat): super().__init__(); self.fp, self.cat = fp, cat
     def run(self):
-        self.finished.emit(index_file(self.fp, self.cat))
+        text = self._extract(self.fp)
+        if not text.strip(): self.done.emit({"status": "empty"}); return
+        r = add_document(self.fp, text, self.cat, file_name=Path(self.fp).name)
+        self.done.emit(r)
 
-
-def _extract(fp):
-    s = Path(fp).suffix.lower()
-    try:
-        if s == ".pdf":
-            from tools.pdf_tools import extract_text; return extract_text(fp)
-        elif s in (".txt", ".md", ".csv"):
-            for e in ["utf-8", "gbk", "latin-1"]:
-                try:
-                    with open(fp, "r", encoding=e) as f: return f.read()
-                except UnicodeDecodeError: continue
-            return ""
-        elif s == ".xlsx":
-            from tools.excel_tools import read_excel
-            return "\n".join("\t".join(str(c) for c in r) for r in read_excel(fp))
-        elif s == ".docx":
-            try:
-                import docx; return "\n".join(p.text for p in docx.Document(fp).paragraphs)
-            except ImportError: return ""
-    except Exception as e:
-        logger.error("提取失败 %s: %s", fp, e)
-    return ""
-
-
-def index_file(fp, cat):
-    text = _extract(fp)
-    if not text.strip(): return {"status": "empty", "file": fp}
-    return add_document(fp, text, cat, file_name=Path(fp).name)
+    def _extract(self, fp):
+        s = Path(fp).suffix.lower()
+        try:
+            if s == ".pdf":
+                from tools.pdf_tools import extract_text; return extract_text(fp)
+            elif s in (".txt", ".md", ".csv"):
+                for e in ["utf-8", "gbk"]:
+                    try:
+                        with open(fp, "r", encoding=e) as f: return f.read()
+                    except UnicodeDecodeError: continue
+            elif s == ".xlsx":
+                from tools.excel_tools import read_excel
+                return "\n".join("\t".join(str(c) for c in r) for r in read_excel(fp))
+        except Exception: pass
+        return ""
 
 
 class PageKB(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._workers = []
-        self._build_ui()
-        self._load()
-
-    def _build_ui(self):
+        self.workers = []
         l = QVBoxLayout(self)
-        l.setContentsMargins(24, 20, 24, 20)
-        l.setSpacing(12)
+        l.setContentsMargins(28, 24, 28, 24); l.setSpacing(12)
 
-        h = QLabel("📚 知识库"); h.setFont(title_font(17)); l.addWidget(h)
+        h = QLabel("知识库"); h.setStyleSheet("font-size:18px; font-weight:bold;"); l.addWidget(h)
 
         tb = QHBoxLayout()
-        self.up_btn = QPushButton("+ 上传"); self.up_btn.clicked.connect(self._upload)
-        tb.addWidget(self.up_btn)
-        ref = QPushButton("刷新"); ref.setProperty("class", "secondary")
+        up = QPushButton("+ 上传"); up.clicked.connect(self._upload); tb.addWidget(up)
+        ref = QPushButton("刷新"); ref.setProperty("text", "次级")
         ref.clicked.connect(self._load); tb.addWidget(ref)
         tb.addStretch()
-        self.status = QLabel(""); self.status.setStyleSheet(f"color: {TEXT_MUTED};")
+        self.status = QLabel(""); self.status.setStyleSheet(f"color:{TEXT_MUTED};")
         tb.addWidget(self.status)
         l.addLayout(tb)
 
         sr = QHBoxLayout()
-        self.search_in = QLineEdit(); self.search_in.setPlaceholderText("语义检索...")
-        self.search_in.returnPressed.connect(self._search)
-        sr.addWidget(self.search_in)
-        sb = QPushButton("检索"); sb.setProperty("class", "secondary")
-        sb.clicked.connect(self._search); sr.addWidget(sb)
-        l.addLayout(sr)
+        self.si = QLineEdit(); self.si.setPlaceholderText("检索...")
+        self.si.returnPressed.connect(self._search); sr.addWidget(self.si)
+        sb = QPushButton("搜索"); sb.setProperty("text", "次级"); sb.clicked.connect(self._search)
+        sr.addWidget(sb); l.addLayout(sr)
 
-        self.result = QTextEdit(); self.result.setReadOnly(True)
-        self.result.setPlaceholderText("检索结果..."); self.result.setMaximumHeight(100)
-        self.result.setStyleSheet(f"background: {BG_SIDEBAR}; border: 1px solid {BORDER}; border-radius: 8px; padding: 8px;")
-        l.addWidget(self.result)
+        self.res = QTextEdit(); self.res.setReadOnly(True)
+        self.res.setPlaceholderText("结果..."); self.res.setMaximumHeight(80)
+        self.res.setStyleSheet(f"background:#fafafa; border:1px solid {BORDER}; border-radius:6px; padding:8px;")
+        l.addWidget(self.res)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["文件名", "分类", "切片数", "路径", "操作"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        l.addWidget(self.table)
+        self.tbl = QTableWidget(0, 4)
+        self.tbl.setHorizontalHeaderLabels(["文件", "分类", "切片", "操作"])
+        self.tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        l.addWidget(self.tbl)
+        self._load()
 
     def _load(self):
-        self.table.setRowCount(0)
+        self.tbl.setRowCount(0)
         docs = list_documents()
-        self.table.setRowCount(len(docs))
+        self.tbl.setRowCount(len(docs))
         for i, d in enumerate(docs):
-            self.table.setItem(i, 0, QTableWidgetItem(d["file_name"]))
-            self.table.setItem(i, 1, QTableWidgetItem(COLLECTIONS.get(d["category"], d["category"])))
-            self.table.setItem(i, 2, QTableWidgetItem(str(d["total_chunks"])))
-            self.table.setItem(i, 3, QTableWidgetItem(d["file_path"]))
-            del_btn = QPushButton("删除"); del_btn.setProperty("class", "ghost")
-            del_btn.setFixedHeight(24)
-            del_btn.setStyleSheet(f"color: {DANGER}; font-size: 11px;")
-            del_btn.clicked.connect(lambda ch, fp=d["file_path"], c=d["category"]: self._delete(fp, c))
-            self.table.setCellWidget(i, 4, del_btn)
-        self.status.setText(f"已索引: {sum(get_stats().values())} 个文档")
+            self.tbl.setItem(i, 0, QTableWidgetItem(d["file_name"]))
+            self.tbl.setItem(i, 1, QTableWidgetItem(COLLECTIONS.get(d["category"], d["category"])))
+            self.tbl.setItem(i, 2, QTableWidgetItem(str(d["total_chunks"])))
+            b = QPushButton("删除"); b.setProperty("text", "次级")
+            b.setFixedHeight(22); b.setStyleSheet("font-size:11px; color:#dc2626;")
+            b.clicked.connect(lambda ch, fp=d["file_path"], c=d["category"]: self._del(fp, c))
+            self.tbl.setCellWidget(i, 3, b)
+        self.status.setText(f"共 {len(docs)} 个文档")
 
     def _upload(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "选择文件", "", "文件 (*.txt *.md *.pdf *.docx *.xlsx *.csv)")
+        files, _ = QFileDialog.getOpenFileNames(self, "选择", "", "文件 (*.txt *.md *.pdf *.docx *.xlsx)")
         if not files: return
         cat = KBCategory.WORK_DOC.value
-        item, ok = QInputDialog.getItem(self, "选择分类", "分类:", [n for n, _ in KB_TREE], 0, False)
+        item, ok = QInputDialog.getItem(self, "分类", "分类:", [n for n, _ in KB], 0, False)
         if ok and item:
-            for n, k in KB_TREE:
+            for n, k in KB:
                 if n == item: cat = k; break
         for f in files:
-            w = IndexWorker(f, cat); w.finished.connect(self._indexed)
-            w.start(); self._workers.append(w)
-
-    def _indexed(self, r):
-        self._load()
-        self.status.setText(f"索引完成: {r.get('chunks', 0)} 切片" if r.get("status") == "ok"
-                            else "文件为空" if r.get("status") == "empty" else "索引失败")
+            w = IndexWorker(f, cat); w.done.connect(lambda r: self._load())
+            w.start(); self.workers.append(w)
 
     def _search(self):
-        q = self.search_in.text().strip()
+        q = self.si.text().strip()
         if not q: return
-        self.result.setText("检索中...")
-        results = search(q, top_k=5)
-        if not results: self.result.setText("未找到"); return
-        self.result.setText("\n\n".join(
-            f"{i+1}. [{r['file_name']}] ({r['score']:.2f})\n   {r['text'][:120]}..."
-            for i, r in enumerate(results)))
+        self.res.setText("搜索中...")
+        r = search(q, top_k=5)
+        if not r: self.res.setText("无结果"); return
+        self.res.setText("\n".join(f"• [{x['file_name']}] {x['text'][:80]}..." for x in r))
 
-    def _delete(self, fp, cat):
-        delete_document(fp, cat); self._load()
+    def _del(self, fp, cat): delete_document(fp, cat); self._load()

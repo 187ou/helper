@@ -46,7 +46,7 @@ def correct_output(original: str, reason: str, context: dict) -> str:
     try:
         corrected = chat([
             {"role": "system", "content": "你是一个任务执行助手，请根据上下文完成任务并返回结果。"},
-            {"role": "user", "prompt},
+            {"role": "user", "content": prompt},
         ], temperature=0.3)
         return corrected
     except Exception as e:

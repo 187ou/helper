@@ -1,4 +1,4 @@
-"""程序入口：托盘启动、全局初始化。"""
+"""程序入口：CLI 终端 + 全局快捷键唤起。"""
 import os
 import sys
 
@@ -9,51 +9,68 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
 if sys.stderr and hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from PyQt6.QtWidgets import QApplication
-
 import logging
+import threading
+import ctypes
 from core.logging import setup_logging
 from config.path_config import ensure_dirs, APP_LOG_PATH
 from config.settings import load_config
 from memory_store.sqlite_db import init_db
-from gui.main_window import MainWindow
-from gui.tray_icon import TrayIcon
-from gui.style import GLOBAL_QSS
+from service.task_runner import start as start_scheduler
+
+
+def bring_window_to_front():
+    """将当前终端窗口置顶（Windows）."""
+    try:
+        import ctypes
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+
+def hotkey_listener():
+    """全局快捷键监听线程."""
+    try:
+        import keyboard
+        # Ctrl+Alt+J 唤起终端
+        keyboard.add_hotkey("ctrl+alt+j", bring_window_to_front)
+        logger.info("全局快捷键 Ctrl+Alt+J 已注册")
+        keyboard.wait()  # 阻塞等待
+    except ImportError:
+        logger.warning("keyboard 库未安装，全局快捷键不可用")
+    except Exception as e:
+        logger.error("快捷键监听异常: %s", e)
 
 
 def main() -> int:
     setup_logging(level="INFO", log_file=str(APP_LOG_PATH))
+    global logger
     logger = logging.getLogger("main")
-    logger.info("═══ 桌面智能助手启动 ═══")
+    logger.info("═══ 桌面智能助手启动 (CLI) ═══")
 
     # 初始化
     ensure_dirs()
     load_config()
     init_db()
 
-    # Qt 应用
-    app = QApplication(sys.argv)
-    app.setApplicationName("桌面智能助手")
-    app.setStyleSheet(GLOBAL_QSS)
-    # 关闭最后一个窗口不退出（托盘常驻）
-    app.setQuitOnLastWindowClosed(False)
-
-    # 主窗口
-    window = MainWindow()
-
-    # 托盘图标
-    tray = TrayIcon(window)
-    tray.show()
-
     # 启动定时任务调度器
-    from service.task_runner import start as start_scheduler
-    start_scheduler(window)
+    try:
+        start_scheduler(None)
+    except Exception as e:
+        logger.warning("定时任务启动失败: %s", e)
 
-    # 显示主窗口
-    window.show()
-    logger.info("主窗口已显示，托盘已就绪，定时任务已启动")
+    # 启动全局快捷键监听（守护线程）
+    hotkey_thread = threading.Thread(target=hotkey_listener, daemon=True)
+    hotkey_thread.start()
 
-    return app.exec()
+    # 启动 CLI
+    from cli import cli_main
+    cli_main()
+
+    logger.info("程序退出")
+    return 0
 
 
 if __name__ == "__main__":

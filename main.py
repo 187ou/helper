@@ -28,6 +28,14 @@ def main() -> int:
     load_config()
     init_db()
 
+    # 启动异步演化工作线程
+    try:
+        from evolution_core.async_evolution import start_async_evolution
+        start_async_evolution()
+        logger.info("异步演化工作线程已启动")
+    except Exception as e:
+        logger.warning("异步演化启动失败: %s", e)
+
     # 启动定时任务调度器
     try:
         start_scheduler(None)
@@ -39,7 +47,15 @@ def main() -> int:
     from api.app import app
 
     logger.info("API 服务启动: http://127.0.0.1:8000")
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
+    try:
+        uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
+    finally:
+        # 关闭时清理
+        try:
+            from evolution_core.async_evolution import shutdown_async_evolution
+            shutdown_async_evolution()
+        except Exception:
+            pass
 
     return 0
 

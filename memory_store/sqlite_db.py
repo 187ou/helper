@@ -158,6 +158,61 @@ CREATE TABLE IF NOT EXISTS kb_file_index (
     upload_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
     is_indexed INTEGER NOT NULL DEFAULT 0
 );
+
+# ── 演化引擎深化：模式挖掘 ──
+CREATE TABLE IF NOT EXISTS task_pattern (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_key TEXT NOT NULL UNIQUE,          # 模式标识（如 "周报+月报"）
+    pattern_type TEXT NOT NULL,                  # 类型: workflow / sequence / combo
+    task_keywords TEXT NOT NULL,                 # 关联的关键词 JSON
+    step_template TEXT NOT NULL,                 # 步骤模板 JSON
+    usage_count INTEGER NOT NULL DEFAULT 1,      # 使用次数
+    avg_score REAL DEFAULT 0,                    # 平均得分
+    success_count INTEGER DEFAULT 0,             # 成功次数
+    total_duration REAL DEFAULT 0,               # 总耗时（秒）
+    avg_duration REAL DEFAULT 0,                 # 平均耗时
+    confidence REAL DEFAULT 0,                   # 置信度 0-1
+    source_task_ids TEXT DEFAULT '[]',           # 来源任务 ID JSON
+    create_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    last_use_time TEXT DEFAULT ''
+);
+
+# ── 演化引擎深化：用户反馈学习 ──
+CREATE TABLE IF NOT EXISTS user_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER DEFAULT 0,                   # 关联任务
+    feedback_type TEXT NOT NULL,                 # 类型: modify / reject / retry / praise
+    original_content TEXT,                       # 原始内容
+    modified_content TEXT,                       # 修改后内容
+    diff_summary TEXT,                           # 差异摘要
+    task_type TEXT DEFAULT '',                   # 任务类型
+    context TEXT DEFAULT '',                     # 上下文 JSON
+    create_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+
+# ── 演化引擎深化：个性化偏好画像 ──
+CREATE TABLE IF NOT EXISTS user_preference (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pref_key TEXT NOT NULL UNIQUE,               # 偏好键
+    pref_value TEXT NOT NULL,                    # 偏好值 JSON
+    confidence REAL DEFAULT 0.5,                 # 置信度
+    evidence_count INTEGER DEFAULT 0,            # 证据数
+    last_evidence TEXT DEFAULT '',               # 最近证据
+    update_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+
+# ── 演化引擎深化：演化报告 ──
+CREATE TABLE IF NOT EXISTS evolution_report (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_type TEXT NOT NULL,                   # 类型: daily / weekly / milestone
+    period_start TEXT,                           # 周期开始
+    period_end TEXT,                             # 周期结束
+    content TEXT NOT NULL,                       # 报告内容 JSON
+    highlights TEXT DEFAULT '[]',                # 亮点 JSON
+    suggestions TEXT DEFAULT '[]',               # 建议 JSON
+    score_trend TEXT DEFAULT '[]',               # 分数趋势 JSON
+    create_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
 """
 
 
@@ -170,12 +225,35 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+def _clean_sql(schema: str) -> str:
+    """移除 SQL 中的 # 注释（整行 + 行内）。"""
+    import re
+    lines = []
+    for line in schema.split("\n"):
+        # 跳过纯注释行
+        if line.strip().startswith("#"):
+            continue
+        # 移除行内注释
+        line = re.sub(r"#.*$", "", line)
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def init_db() -> None:
     """初始化数据库：建表 + 迁移。"""
     ensure_dirs()
     conn = get_conn()
     try:
-        conn.executescript(SCHEMA)
+        # 清理注释后逐条执行 DDL
+        clean_schema = _clean_sql(SCHEMA)
+        for statement in clean_schema.split(";"):
+            stmt = statement.strip()
+            if stmt:
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError as e:
+                    if "already exists" not in str(e):
+                        raise
         _migrate(conn)
         conn.commit()
         logger.info("数据库初始化完成: %s", DB_PATH)

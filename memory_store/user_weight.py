@@ -23,6 +23,11 @@ def inc_freq(habit_key: str, delta_weight: float = 0.1):
     _repo.inc_freq(habit_key, delta_weight)
 
 
+def create_habit(habit_key: str, weight: float = 5.0) -> None:
+    """创建新习惯条目。"""
+    _repo.create(habit_key, weight)
+
+
 def decay_expired(days: int = 30) -> int:
     affected = _repo.decay(days)
     logger.info("降权过期习惯 %d 条", affected)

@@ -22,6 +22,15 @@ class HabitRepository(BaseRepository):
         sql += " ORDER BY weight DESC"
         return self._execute(sql)
 
+    def create(self, habit_key: str, weight: float = 5.0) -> None:
+        """创建新习惯条目。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._execute(
+            """INSERT OR IGNORE INTO user_habit_weight (habit_key, weight, freq_count, last_use_time, is_valid)
+               VALUES (?, ?, 1, ?, 1)""",
+            (habit_key, weight, now)
+        )
+
     def set_weight(self, habit_key: str, weight: float) -> None:
         weight = max(WEIGHT_MIN, min(WEIGHT_MAX, weight))
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

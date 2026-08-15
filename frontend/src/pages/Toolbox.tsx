@@ -1,13 +1,14 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
-  Card, Button, Input, Modal,message, Empty, Tag, Tooltip, Popconfirm, Spin,
+  Card, Button, Input, Modal, message, Empty, Tag, Tooltip, Popconfirm, Spin,
 } from 'antd'
 import {
   CaretRightOutlined, DeleteOutlined, PlusOutlined, RobotOutlined, CodeOutlined,
 } from '@ant-design/icons'
+import { api } from '../api'
 
 interface Tool {
-  id: number
+  id: string
   name: string
   description: string
   code: string
@@ -16,52 +17,96 @@ interface Tool {
 }
 
 export default function Toolbox() {
-  const [tools, setTools] = useState<Tool[]>([
-    {
-      id: 1,
-      name: 'bill_analyzer',
-      description: '分析月度账单数据',
-      code: '# 账单分析工具\ndef run(data):\n    return sum(data)',
-      status: 'active',
-      created_at: '2026-08-10',
-    },
-  ])
+  const [tools, setTools] = useState<Tool[]>([])
   const [modalOpen, setModalOpen] = useState(false)
   const [newDesc, setNewDesc] = useState('')
-  const [running, setRunning] = useState<number | null>(null)
+  const [generating, setGenerating] = useState(false)
+  const [running, setRunning] = useState<string | null>(null)
   const [result, setResult] = useState('')
+  const [selectedTool, setSelectedTool] = useState<Tool | null>(null)
 
-  function generateTool() {
-    if (!newDesc.trim()) return
-    const tool: Tool = {
-      id: Date.now(),
-      name: `tool_${Date.now() % 10000}`,
-      description: newDesc,
-      code: `# 自动生成的工具\ndef run(*args, **kwargs):\n    return "TODO: ${newDesc}"\n`,
-      status: 'generated',
-      created_at: new Date().toISOString().slice(0, 10),
+  // 加载工具列表
+  useEffect(() => {
+    loadTools()
+  }, [])
+
+  async function loadTools() {
+    try {
+      const res = await fetch('/api/tool/list')
+      const data = await res.json()
+      setTools(data)
+    } catch {
+      // 后端不可用时保持空列表
     }
-    setTools((prev) => [tool, ...prev])
-    setNewDesc('')
-    setModalOpen(false)
-    message.success('工具已生成（沙箱安全测试后入库）')
+  }
+
+  async function generateTool() {
+    if (!newDesc.trim()) return
+    setGenerating(true)
+    setResult('')
+    try {
+      const res = await fetch('/api/tool/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: newDesc }),
+      })
+      const data = await res.json()
+      if (data.status === 'error') {
+        message.error(data.error || '生成失败')
+        return
+      }
+
+      // 保存到工具库
+      const saveRes = await fetch(`/api/tool/${data.name}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: data.name,
+          description: data.description,
+          code: data.code,
+        }),
+      })
+      if (saveRes.ok) {
+        message.success('工具已生成并入库')
+        setNewDesc('')
+        setModalOpen(false)
+        loadTools()
+      } else {
+        message.warning('生成成功但保存失败')
+      }
+    } catch (e: any) {
+      message.error(e.message || '生成失败')
+    } finally {
+      setGenerating(false)
+    }
   }
 
   async function runTool(tool: Tool) {
     setRunning(tool.id)
     setResult('')
+    setSelectedTool(tool)
     try {
-      // 调用后端沙箱执行
-      const res = await fetch('/api/chat/send', {
+      const res = await fetch(`/api/tool/${tool.id}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: `执行工具: ${tool.name}` }),
+        body: JSON.stringify({}),
       })
-      setResult(`工具 ${tool.name} 已提交执行`)
-    } catch {
-      setResult('执行失败')
+      const data = await res.json()
+      setResult(data.output || '执行完成（无输出）')
+    } catch (e: any) {
+      setResult(`执行失败: ${e.message}`)
     } finally {
       setRunning(null)
+    }
+  }
+
+  async function deleteTool(tool: Tool) {
+    try {
+      await fetch(`/api/tool/${tool.id}`, { method: 'DELETE' })
+      message.success('已删除')
+      loadTools()
+    } catch {
+      message.error('删除失败')
     }
   }
 
@@ -81,7 +126,7 @@ export default function Toolbox() {
 
       <Card className="glass flex-1">
         {tools.length === 0 ? (
-          <Empty description="暂无工具，系统将根据高频操作自动生成" />
+          <Empty description="暂无工具，点击「生成新工具」创建或等待系统自动生成" />
         ) : (
           <div className="grid grid-cols-2 gap-4">
             {tools.map((tool) => (
@@ -108,7 +153,7 @@ export default function Toolbox() {
                         onClick={() => runTool(tool)}
                       />
                     </Tooltip>
-                    <Popconfirm title="确认删除？" onConfirm={() => setTools((p) => p.filter((t) => t.id !== tool.id))}>
+                    <Popconfirm title="确认删除？" onConfirm={() => deleteTool(tool)}>
                       <Button size="small" type="text" danger icon={<DeleteOutlined />} />
                     </Popconfirm>
                   </div>
@@ -125,19 +170,36 @@ export default function Toolbox() {
         )}
       </Card>
 
+      {/* 运行结果 */}
+      {result && (
+        <Card
+          size="small"
+          title={<span>🛠️ 运行结果: {selectedTool?.name}</span>}
+          extra={<Button size="small" onClick={() => setResult('')}>关闭</Button>}
+          className="glass"
+        >
+          <pre className="whitespace-pre-wrap text-xs bg-gray-900 text-green-400 p-3 rounded font-mono max-h-48 overflow-y-auto">
+            {result}
+          </pre>
+        </Card>
+      )}
+
       <Modal
         title="生成新工具"
         open={modalOpen}
         onOk={generateTool}
-        onCancel={() => setModalOpen(false)}
+        onCancel={() => { setModalOpen(false); setNewDesc('') }}
         okText="生成"
+        confirmLoading={generating}
       >
-        <Input.TextArea
-          rows={3}
-          placeholder="描述你需要的功能，例如：批量重命名文件、统计月度消费..."
-          value={newDesc}
-          onChange={(e) => setNewDesc(e.target.value)}
-        />
+        <Spin spinning={generating} tip="AI 生成中...">
+          <Input.TextArea
+            rows={3}
+            placeholder="描述你需要的功能，例如：批量重命名文件、统计月度消费、计算税费..."
+            value={newDesc}
+            onChange={(e) => setNewDesc(e.target.value)}
+          />
+        </Spin>
         <p className="text-xs text-gray-400 mt-2">
           <CodeOutlined /> AI 将生成轻量化脚本，沙箱安全测试后入库
         </p>

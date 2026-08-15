@@ -10,6 +10,7 @@ from evolution_core.judge_score import score_work, score_life, combined_score
 from memory_store.sqlite_db import now_str
 from config.app_const import TaskStatus
 from service.task_service import create_task, save_dag, get_task
+from evolution_core.async_evolution import submit_evolution, start_async_evolution, shutdown_async_evolution
 
 logger = logging.getLogger(__name__)
 
@@ -77,13 +78,13 @@ def run(task_text: str) -> dict[str, Any]:
         result["logs"].append(f"执行异常: {e}")
         logger.exception("任务执行异常: %s", e)
 
-    # 4. 演化打分
+    # 4. 演化打分（同步，快速返回）
     result["work_score"] = score_work(result)
     result["life_score"] = score_life(result)
     result["logs"].append(f"工作评分: {result['work_score']:.1f} | 生活评分: {result['life_score']:.1f}")
 
-    # 5. 自演化闭环
-    _evolution_loop(task_text, result)
+    # 5. 自演化闭环（异步，不阻塞主任务）
+    _evolution_loop_async(task_text, result)
 
     # 6. 持久化到数据库
     _save_task(result, task_type)
@@ -93,9 +94,13 @@ def run(task_text: str) -> dict[str, Any]:
     return result
 
 
-def _evolution_loop(task_text: str, result: dict) -> None:
-    """自演化闭环：打分 → 流程优化 → 权重迭代 → 模板固化 → 日志记录。"""
-    # 检查演化总开关
+def _evolution_loop_async(task_text: str, result: dict) -> None:
+    """异步提交演化闭环（不阻塞主任务）。
+
+    将演化任务提交到后台队列，由工作线程异步执行。
+    如果异步系统不可用，降级到同步执行。
+    """
+    # 边缘：检查演化总开关
     try:
         from service.evolution_config_service import is_evolution_enabled
         if not is_evolution_enabled():
@@ -103,46 +108,51 @@ def _evolution_loop(task_text: str, result: dict) -> None:
     except Exception:
         pass
 
+    # 边缘：补全 result 字段
+    from evolution_core.safe_ops import validate_task_result
+    result = validate_task_result(result)
+
+    # 尝试异步提交
     try:
-        score = combined_score(
-            result["work_score"], result["life_score"],
-            result.get("task_type", "work")
-        )
-        result["combined_score"] = score
+        submitted = submit_evolution(task_text, result)
+        if submitted:
+            logger.debug("演化任务已异步提交: %s", task_text[:30])
+            return
+    except Exception as e:
+        logger.warning("异步提交失败，降级同步: %s", e)
+
+    # 降级：同步执行（只执行核心步骤，跳过 LLM 打分）
+    _evolution_loop_sync_fallback(task_text, result)
+
+
+def _evolution_loop_sync_fallback(task_text: str, result: dict) -> None:
+    """同步降级执行（只执行轻量操作，快速返回）。"""
+    try:
+        # 只用规则打分（不调 LLM）
+        from evolution_core.judge_score import _rule_score
+        scores = _rule_score(result, result.get("task_type", "work"))
+        score = scores.get("overall", 60)
+
+        task_type = result.get("task_type", "work")
+        success = result.get("status") == "success"
+        duration = result.get("cost_time", 0)
 
         # 权重迭代
-        from evolution_core.weight_evolve import evolve_from_task
-        evolve_from_task(task_text, score)
-
-        # 流程优化（步骤 > 2 时）
         try:
-            from service.evolution_config_service import get_config
-            if get_config("enable_auto_optimize") and len(result.get("steps", [])) > 2:
-                from evolution_core.flow_optimize import optimize
-                from evolution_core.evo_log import log_flow_optimize
-                old_steps = result["steps"]
-                optimized = optimize(old_steps)
-                if len(optimized) < len(old_steps):
-                    log_flow_optimize(old_steps, optimized)
-                    result["logs"].append(f"流程优化: {len(old_steps)}步 → {len(optimized)}步")
-        except Exception as e:
-            logger.warning("流程优化异常: %s", e)
+            from evolution_core.weight_evolve import evolve_from_task
+            evolve_from_task(task_text, score, task_type, success, duration)
+        except Exception:
+            pass
 
-        # 模板固化（高频任务）
+        # 模式学习
         try:
-            from service.evolution_config_service import get_config
-            if get_config("enable_template_save"):
-                from evolution_core.template_save import check_and_save_template
-                from evolution_core.evo_log import log_template_save
-                tpl = check_and_save_template(task_text, result.get("steps", []))
-                if tpl:
-                    log_template_save(tpl["name"], tpl["freq"])
-                    result["logs"].append(f"固化模板: {tpl['name']}")
-        except Exception as e:
-            logger.warning("模板固化异常: %s", e)
+            from evolution_core.pattern_miner import learn_from_task
+            learn_from_task(task_text, result.get("steps", []), score, duration, success)
+        except Exception:
+            pass
 
     except Exception as e:
-        logger.warning("演化闭环异常: %s", e)
+        logger.warning("同步降级演化失败: %s", e)
 
 
 def run_stream(task_text: str) -> Generator[dict, None, None]:

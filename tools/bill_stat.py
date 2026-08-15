@@ -1,4 +1,4 @@
-"""收支统计工具（骨架）。"""
+"""收支统计工具（真实可用）。"""
 import logging
 from typing import Any
 

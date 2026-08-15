@@ -1,7 +1,7 @@
 """任务调度：串联 parser → builder → graph.execute，含演化打分。"""
 import logging
 import time
-from typing import Any
+from typing import Any, Generator
 
 from core.context import new_task_id, set_task_id
 from agent_core.task_parser import parse, detect_task_type
@@ -125,6 +125,103 @@ def _evolution_loop(task_text: str, result: dict) -> None:
 
     except Exception as e:
         logger.warning("演化闭环异常: %s", e)
+
+
+def run_stream(task_text: str) -> Generator[dict, None, None]:
+    """流式执行任务，yield 事件供 SSE 推送。
+
+    事件类型:
+    - steps: 拆解结果 {steps: [...]}
+    - step_start: 步骤开始 {index, name}
+    - token: LLM 输出逐字符 {index, text}
+    - step_done: 步骤完成 {index, name}
+    - done: 完成 {cost_time}
+    """
+    task_id = new_task_id()
+    set_task_id(task_id)
+
+    # 1. 拆解
+    steps = parse(task_text)
+    yield {
+        "type": "steps",
+        "data": {
+            "task_id": task_id,
+            "steps": [{"index": s.index, "name": s.name, "desc": s.description, "type": s.step_type} for s in steps],
+        },
+    }
+
+    # 2. 逐个步骤执行 + 流式输出
+    start = time.time()
+    step_results = []
+
+    try:
+        for step in steps:
+            yield {"type": "step_start", "data": {"index": step.index, "name": step.name}}
+
+            state = {
+                "task_text": task_text,
+                "logs": [],
+                "completed_steps": [],
+                "step_results": step_results,
+                "cost_time": 0,
+                "current_step": step.index - 1,
+            }
+
+            # 执行节点并流式推送 token
+            result = yield from _execute_node_streaming(step, state)
+            step_results.extend(result.get("step_results", []))
+
+            yield {"type": "step_done", "data": {"index": step.index, "name": step.name}}
+    except Exception as e:
+        logger.exception("流式任务异常: %s", e)
+        yield {"type": "log", "data": {"message": f"执行异常: {e}"}}
+
+    cost_time = time.time() - start
+    yield {"type": "log", "data": {"message": f"执行完成，总耗时 {cost_time:.2f}s"}}
+    yield {"type": "done", "data": {"cost_time": cost_time}}
+
+
+def _execute_node_streaming(step, state) -> Generator[dict, None, dict]:
+    """执行单个节点，yield 每个 token，最后返回结果。"""
+    from agent_core.llm_client import chat_stream
+    from agent_core.result_validator import validate_and_retry
+
+    context = _build_node_context(step, state)
+    result_parts = []
+
+    for token in chat_stream([
+        {"role": "system", "content": "你是一个任务执行助手。你会收到一个任务步骤的描述和上下文，需要执行该步骤并返回结果。"},
+        {"role": "user", "content": context},
+    ], temperature=0.5):
+        result_parts.append(token)
+        yield {"type": "token", "data": {"index": step.index, "text": token}}
+
+    result = "".join(result_parts)
+    validated, _ = validate_and_retry(result, {
+        "step_desc": step.description,
+        "task_text": state.get("task_text", ""),
+    })
+
+    return {
+        "logs": [f"[{step.index}] {step.name}: {validated[:100]}..."],
+        "completed_steps": [step.index],
+        "step_results": [{"index": step.index, "name": step.name, "result": validated}],
+        "cost_time": 0,
+        "current_step": step.index,
+    }
+
+
+def _build_node_context(step, state) -> str:
+    """构建节点执行上下文。"""
+    parts = [f"## 当前步骤\n名称: {step.name}\n描述: {step.description}"]
+    prev_results = state.get("step_results", [])
+    if prev_results:
+        parts.append("\n## 前序步骤结果")
+        for r in prev_results[-3:]:
+            parts.append(f"- [{r['name']}] {r['result'][:200]}")
+    if state.get("task_text"):
+        parts.append(f"\n## 用户原始指令\n{state['task_text']}")
+    return "\n".join(parts)
 
 
 def _save_task(result: dict, task_type) -> None:

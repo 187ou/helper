@@ -1,12 +1,22 @@
 import { useState, useRef, useEffect } from 'react'
 import { api } from '../api'
 
+// 步骤状态: pending / running / done
+const STATUS_ICON = { pending: '⏳', running: '▸', done: '✓' }
+const STATUS_COLOR = {
+  pending: 'text-[var(--color-text-muted)]',
+  running: 'text-[var(--color-accent)] animate-pulse',
+  done: 'text-[var(--color-success)]',
+}
+
 export default function Chat() {
+  const [steps, setSteps] = useState([])
   const [logs, setLogs] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [configured, setConfigured] = useState(true)
   const logRef = useRef(null)
+  const abortRef = useRef(null)
 
   useEffect(() => {
     api.checkConfigured().then((r) => setConfigured(r.configured))
@@ -16,7 +26,7 @@ export default function Chat() {
     if (logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight
     }
-  }, [logs])
+  }, [logs, steps])
 
   async function send() {
     const text = input.trim()
@@ -27,22 +37,111 @@ export default function Chat() {
       return
     }
 
-    setLogs((l) => [...l, { type: 'user', text }])
+    setSteps([])
+    setLogs([{ type: 'user', text }])
     setInput('')
     setLoading(true)
-    setLogs((l) => [...l, { type: 'info', text: '执行中...' }])
 
     try {
-      const result = await api.sendMessage(text)
-      setLogs((l) => {
-        const next = l.slice(0, -1)
-        return [...next, ...(result.logs || []).map((lg) => ({ type: 'log', text: lg })),
-          { type: 'success', text: `✓ 完成 · ${(result.cost_time || 0).toFixed(1)}s` }]
+      const controller = new AbortController()
+      abortRef.current = controller
+
+      const res = await fetch('/api/chat/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+        signal: controller.signal,
       })
-    } catch {
-      setLogs((l) => [...l.slice(0, -1), { type: 'error', text: '执行失败' }])
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+
+        // 解析 SSE 事件
+        while (true) {
+          const eventEnd = buffer.indexOf('\n\n')
+          if (eventEnd === -1) break
+
+          const block = buffer.slice(0, eventEnd)
+          buffer = buffer.slice(eventEnd + 2)
+
+          const lines = block.split('\n')
+          let eventType = ''
+          let dataStr = ''
+
+          for (const line of lines) {
+            if (line.startsWith('event: ')) eventType = line.slice(7)
+            else if (line.startsWith('data: ')) dataStr = line.slice(6)
+          }
+
+          if (eventType && dataStr) {
+            try {
+              const data = JSON.parse(dataStr)
+              handleEvent(eventType, data)
+            } catch {}
+          }
+        }
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        setLogs((l) => [...l, { type: 'error', text: `连接失败: ${e.message}` }])
+      }
     }
+
     setLoading(false)
+  }
+
+  function handleEvent(type, data) {
+    switch (type) {
+      case 'steps':
+        setSteps(data.steps.map((s) => ({ ...s, status: 'pending', output: '' })))
+        break
+
+      case 'step_start':
+        setSteps((prev) =>
+          prev.map((s) => (s.index === data.index ? { ...s, status: 'running', output: '' } : s))
+        )
+        break
+
+      case 'token':
+        // 逐字追加到对应步骤
+        setSteps((prev) =>
+          prev.map((s) =>
+            s.index === data.index ? { ...s, output: (s.output || '') + data.text } : s
+          )
+        )
+        break
+
+      case 'step_done':
+        setSteps((prev) =>
+          prev.map((s) => (s.index === data.index ? { ...s, status: 'done' } : s))
+        )
+        break
+
+      case 'log':
+        setLogs((l) => [...l, { type: 'log', text: data.message }])
+        break
+
+      case 'done':
+        setSteps((prev) => prev.map((s) => (s.status === 'running' ? { ...s, status: 'done' } : s)))
+        setLogs((l) => [
+          ...l,
+          { type: 'success', text: `✓ 完成 · ${(data.cost_time || 0).toFixed(1)}s` },
+        ])
+        break
+
+      case 'error':
+        setLogs((l) => [...l, { type: 'error', text: data.message }])
+        break
+    }
   }
 
   function handleKeyDown(e) {
@@ -62,28 +161,72 @@ export default function Chat() {
         </p>
       </div>
 
-      {/* 日志区 */}
-      <div className="flex-1 glass rounded-2xl p-4 overflow-hidden">
-        <div ref={logRef} className="h-full overflow-y-auto space-y-1 text-sm leading-relaxed">
-          {logs.length === 0 && (
-            <p className="text-[var(--color-text-muted)] text-center mt-8">执行日志...</p>
-          )}
-          {logs.map((log, i) => (
-            <div
-              key={i}
-              className={{
-                user: 'font-medium text-[var(--color-text)]',
-                log: 'text-[var(--color-text-sec)] pl-2',
-                success: 'text-[var(--color-success)] font-medium',
-                error: 'text-[var(--color-danger)]',
-                info: 'text-[var(--color-text-muted)] italic',
-              }[log.type] || ''}
-            >
-              {log.type === 'log' ? `› ${log.text}` : log.text}
-            </div>
-          ))}
+      {/* 拆解步骤 + 流式输出 */}
+      {steps.length > 0 && (
+        <div className="flex-1 glass rounded-2xl p-4 overflow-y-auto min-h-0">
+          <div className="text-xs text-[var(--color-text-sec)] mb-3">
+            📋 任务拆解 ({steps.length} 步)
+          </div>
+          <div className="space-y-3">
+            {steps.map((step) => (
+              <div
+                key={step.index}
+                className={`p-3 rounded-xl transition-all ${
+                  step.status === 'running'
+                    ? 'bg-[var(--color-accent-soft)] border border-[var(--color-accent)]'
+                    : step.status === 'done'
+                      ? 'bg-green-50/50'
+                      : 'bg-white/40'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className={STATUS_COLOR[step.status]}>{STATUS_ICON[step.status]}</span>
+                  <span className="font-medium text-sm text-[var(--color-text)]">{step.name}</span>
+                  <span className="text-xs text-[var(--color-text-muted)] ml-auto">
+                    {step.type === 'parallel' ? '并行' : '串行'}
+                  </span>
+                </div>
+                {step.desc && (
+                  <p className="text-xs text-[var(--color-text-sec)] mt-1 ml-6">{step.desc}</p>
+                )}
+                {/* 流式输出内容 */}
+                {(step.output || step.status === 'running') && (
+                  <div className="mt-2 ml-6 text-sm text-[var(--color-text-sec)] leading-relaxed whitespace-pre-wrap">
+                    {step.output}
+                    {step.status === 'running' && (
+                      <span className="inline-block w-1.5 h-4 bg-[var(--color-accent)] ml-0.5 animate-pulse align-middle" />
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* 日志区 */}
+      {steps.length === 0 && (
+        <div ref={logRef} className="flex-1 glass rounded-2xl p-4 overflow-y-auto min-h-0">
+          <div className="space-y-1 text-sm leading-relaxed">
+            {logs.length === 0 && (
+              <p className="text-[var(--color-text-muted)] text-center mt-8">执行日志...</p>
+            )}
+            {logs.map((log, i) => (
+              <div
+                key={i}
+                className={{
+                  user: 'font-medium text-[var(--color-text)]',
+                  log: 'text-[var(--color-text-sec)] pl-2',
+                  success: 'text-[var(--color-success)] font-medium',
+                  error: 'text-[var(--color-danger)]',
+                }[log.type] || ''}
+              >
+                {log.type === 'log' ? `› ${log.text}` : log.text}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 输入区 */}
       <div className="glass-strong rounded-2xl p-3">

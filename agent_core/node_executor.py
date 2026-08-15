@@ -1,9 +1,10 @@
-"""各任务节点执行器（LLM 驱动），含校验重试。"""
+"""各任务节点执行器（LLM 驱动），含校验重试 + 流式输出支持。"""
 import logging
 import time
+from typing import Callable, Optional
 
 from agent_core.task_parser import TaskStep
-from agent_core.llm_client import chat
+from agent_core.llm_client import chat, chat_stream
 from agent_core.result_validator import validate_and_retry
 
 logger = logging.getLogger(__name__)
@@ -17,8 +18,12 @@ _EXECUTE_SYSTEM_PROMPT = """你是一个任务执行助手。你会收到一个�
 4. 保持简洁，重点突出"""
 
 
-def execute_node(step: TaskStep, state: dict) -> dict:
-    """执行单个节点，含校验重试。"""
+def execute_node(step: TaskStep, state: dict, token_cb: Optional[Callable[[str], None]] = None) -> dict:
+    """执行单个节点，含校验重试。
+
+    Args:
+        token_cb: 流式回调，每个 token 到达时调用
+    """
     logger.info("[节点 %d] %s", step.index, step.name)
     new_logs = [f"[{step.index}] {step.name}: {step.description}"]
     step_result = None
@@ -27,10 +32,17 @@ def execute_node(step: TaskStep, state: dict) -> dict:
     context = _build_context(step, state)
 
     try:
-        result = chat([
+        # 流式收集完整响应
+        result_parts = []
+        for token in chat_stream([
             {"role": "system", "content": _EXECUTE_SYSTEM_PROMPT},
             {"role": "user", "content": context},
-        ], temperature=0.5)
+        ], temperature=0.5):
+            result_parts.append(token)
+            if token_cb:
+                token_cb(token)
+
+        result = "".join(result_parts)
 
         # 校验 + 自动重试
         validated, passed = validate_and_retry(result, {
@@ -39,7 +51,7 @@ def execute_node(step: TaskStep, state: dict) -> dict:
         })
         if not passed:
             logger.warning("[节点 %d] 校验未通过，使用最后一次输出", step.index)
-            new_logs.append(f"  ⚠️ 校验未通过，使用纠错后输出")
+            new_logs.append("  ⚠️ 校验未通过，使用纠错后输出")
 
         step_result = {"index": step.index, "name": step.name, "result": validated}
         new_logs.append(f"  → {validated[:100]}...")

@@ -97,6 +97,38 @@ def chat(
         return f"[LLM 调用失败: {e}]"
 
 
+def chat_stream(messages: list[dict[str, str]], model: str | None = None, temperature: float = 0.7, max_tokens: int = 1024):
+    """流式调用 LLM，yield 每个 token。"""
+    if get_run_mode() == RunMode.OFFLINE or not is_llm_configured():
+        reply = _offline_reply(messages)
+        for ch in reply:
+            yield ch
+        return
+
+    client = get_client()
+    if client is None:
+        reply = _offline_reply(messages)
+        for ch in reply:
+            yield ch
+        return
+
+    try:
+        kwargs: dict[str, Any] = {
+            "model": model or get_model_name(),
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        stream = client.chat.completions.create(**kwargs)
+        for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+    except Exception as e:
+        logger.error("LLM 流式调用失败: %s", e)
+        yield f"[LLM 调用失败: {e}]"
+
+
 def chat_json(messages: list[dict[str, str]], **kwargs) -> dict:
     """调用 LLM 并解析 JSON 响应（空响应自动重试一次）。
 

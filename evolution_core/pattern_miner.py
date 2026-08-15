@@ -41,10 +41,31 @@ def mine_patterns() -> list[dict[str, Any]]:
 
 @safe_db_read
 def recommend_steps(task_text: str, task_type: str = "") -> list[dict[str, Any]] | None:
-    """为新任务推荐历史最优步骤模板。"""
+    """为新任务推荐历史最优步骤模板（语义匹配 + 关键词匹配双通道）。"""
     if not task_text or not task_text.strip():
         return None
 
+    # 1. 尝试语义匹配（更精准）
+    try:
+        from evolution_core.semantic_match import semantic_match_patterns
+        conn = get_conn()
+        all_patterns = conn.execute(
+            "SELECT * FROM task_pattern WHERE usage_count >= 1 ORDER BY confidence DESC LIMIT 50"
+        ).fetchall()
+        conn.close()
+
+        if all_patterns:
+            matched = semantic_match_patterns(task_text, [dict(p) for p in all_patterns], threshold=0.4)
+            if matched:
+                best = matched[0]
+                steps = safe_json_loads(best.get("step_template"), default=None)
+                if steps and isinstance(steps, list):
+                    logger.info("语义推荐: %s (相似度 %.2f)", best["pattern_key"], best.get("semantic_score", 0))
+                    return steps
+    except Exception as e:
+        logger.debug("语义匹配失败，降级关键词: %s", e)
+
+    # 2. 降级：关键词匹配
     matched = _find_matching_patterns(task_text, task_type)
     if not matched:
         return None
@@ -54,7 +75,7 @@ def recommend_steps(task_text: str, task_type: str = "") -> list[dict[str, Any]]
 
     steps = safe_json_loads(best.get("step_template"), default=None)
     if steps and isinstance(steps, list):
-        logger.info("推荐模式: %s (置信度 %.2f)", best["pattern_key"], best["confidence"])
+        logger.info("关键词推荐: %s (置信度 %.2f)", best["pattern_key"], best["confidence"])
         return steps
     return None
 

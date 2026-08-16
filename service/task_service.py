@@ -165,6 +165,35 @@ def change_status(task_id: int, new_status: str) -> dict[str, Any] | None:
     return get_task(task_id)
 
 
+def get_failed_steps(task_id: int) -> list[dict[str, Any]]:
+    """获取任务中失败/未执行的步骤列表。"""
+    dag = get_dag(task_id)
+    if not dag:
+        return []
+    failed = []
+    for node in dag.get("nodes", []):
+        status = node.get("status", "pending")
+        if status in ("failed", "pending", "running"):
+            failed.append(node)
+    return failed
+
+
+def get_first_failed_step_index(task_id: int) -> int | None:
+    """获取第一个失败/未执行步骤的索引，用于断点续跑。"""
+    failed = get_failed_steps(task_id)
+    if not failed:
+        return None
+    # 返回第一个失败节点的 index
+    for node in failed:
+        nid = node.get("id", "")
+        if nid.startswith("step_"):
+            try:
+                return int(nid.split("_")[1])
+            except (ValueError, IndexError):
+                continue
+    return None
+
+
 def delete_task(task_id: int) -> bool:
     """删除任务。"""
     conn = get_conn()

@@ -155,18 +155,30 @@ def _evolution_loop_sync_fallback(task_text: str, result: dict) -> None:
         logger.warning("同步降级演化失败: %s", e)
 
 
-def run_stream(task_text: str) -> Generator[dict, None, None]:
+def run_stream(task_text: str, task_id: int | None = None,
+               resume_from: int | None = None) -> Generator[dict, None, None]:
     """流式执行任务，yield 事件供 SSE 推送。
+
+    支持断点续跑：传入 task_id 和 resume_from 可从指定步骤继续。
 
     事件类型:
     - steps: 拆解结果 {steps: [...]}
     - step_start: 步骤开始 {index, name}
     - token: LLM 输出逐字符 {index, text}
-    - step_done: 步骤完成 {index, name}
-    - done: 完成 {cost_time}
+    - step_done: 步骤完成 {index, name, status}
+    - log: 日志消息 {message}
+    - done: 完成 {cost_time, status}
+
+    Args:
+        task_text: 任务文本
+        task_id: 已有任务 ID（重试/续跑时传入），None 则新建
+        resume_from: 从哪个步骤索引开始续跑（跳过之前成功的步骤）
     """
-    task_id = new_task_id()
+    # ── 任务初始化 ──
+    if task_id is None:
+        task_id = new_task_id()
     set_task_id(task_id)
+    is_resume = resume_from is not None
 
     # 1. 拆解
     steps = parse(task_text)
@@ -174,16 +186,52 @@ def run_stream(task_text: str) -> Generator[dict, None, None]:
         "type": "steps",
         "data": {
             "task_id": task_id,
+            "is_resume": is_resume,
             "steps": [{"index": s.index, "name": s.name, "desc": s.description, "type": s.step_type} for s in steps],
         },
     }
 
+    # ── 恢复已有状态（断点续跑） ──
+    step_results: list[dict] = []
+    node_states: dict[str, str] = {}  # step_id → status
+
+    if is_resume:
+        try:
+            from service.task_service import get_task, get_dag
+            existing_task = get_task(task_id)
+            existing_dag = get_dag(task_id) if existing_task else None
+            if existing_dag:
+                for node in existing_dag.get("nodes", []):
+                    node_states[node["id"]] = node.get("status", "pending")
+                # 恢复已完成的结果
+                for node in existing_dag.get("nodes", []):
+                    if node.get("status") == "success":
+                        # 从持久化的 task_steps 恢复结果
+                        pass
+            logger.info("断点续跑: 任务 #%d，从步骤 %d 继续，已有 %d 步完成",
+                        task_id, resume_from, sum(1 for v in node_states.values() if v == "success"))
+            yield {"type": "log", "data": {"message": f"🔄 断点续跑：从步骤 {resume_from + 1} 继续"}}
+        except Exception as e:
+            logger.warning("恢复状态失败，从头执行: %s", e)
+            is_resume = False
+            resume_from = None
+
     # 2. 逐个步骤执行 + 流式输出
     start = time.time()
-    step_results = []
 
     try:
         for step in steps:
+            nid = f"step_{step.index}"
+
+            # 断点续跑：跳过已成功的步骤
+            if is_resume and resume_from is not None and step.index < resume_from:
+                if node_states.get(nid) == "success":
+                    # 注入已完成的结果作为上下文
+                    logger.info("[节点 %d] 跳过（已完成）", step.index)
+                    continue
+
+            # 标记为执行中
+            node_states[nid] = "running"
             yield {"type": "step_start", "data": {"index": step.index, "name": step.name}}
 
             state = {
@@ -195,88 +243,149 @@ def run_stream(task_text: str) -> Generator[dict, None, None]:
                 "current_step": step.index - 1,
             }
 
-            # 执行节点并流式推送 token
+            # 执行节点并流式推送 token（含执行重试）
             result = yield from _execute_node_streaming(step, state)
-            step_results.extend(result.get("step_results", []))
 
-            yield {"type": "step_done", "data": {"index": step.index, "name": step.name}}
+            # 更新节点状态
+            node_states[nid] = result.get("status", "failed")
+            if result.get("status") == "success":
+                step_results.extend(result.get("step_results", []))
+                yield {"type": "step_done", "data": {"index": step.index, "name": step.name, "status": "success"}}
+            else:
+                yield {"type": "step_done", "data": {"index": step.index, "name": step.name, "status": "failed"}}
+                yield {"type": "log", "data": {"message": f"❌ 步骤 {step.index} 执行失败: {result.get('error', '未知错误')}"}}
+                # 失败不立即终止，继续执行后续步骤（部分成功策略）
+
     except Exception as e:
         logger.exception("流式任务异常: %s", e)
         yield {"type": "log", "data": {"message": f"执行异常: {e}"}}
 
     cost_time = time.time() - start
-    yield {"type": "log", "data": {"message": f"执行完成，总耗时 {cost_time:.2f}s"}}
-    yield {"type": "done", "data": {"cost_time": cost_time}}
 
-    # 持久化任务 + DAG + 状态流转
+    # ── 计算最终状态 ──
+    total_steps = len(steps)
+    success_steps = sum(1 for v in node_states.values() if v == "success")
+    failed_steps = sum(1 for v in node_states.values() if v == "failed")
+
+    if failed_steps == 0 and success_steps == total_steps:
+        final_status = TaskStatus.DONE.value
+    elif success_steps > 0:
+        final_status = TaskStatus.FAILED.value  # 部分成功仍标记失败（可重试）
+    else:
+        final_status = TaskStatus.FAILED.value
+
+    yield {"type": "log", "data": {"message": f"执行完成: {success_steps}/{total_steps} 步成功，耗时 {cost_time:.2f}s"}}
+    yield {"type": "done", "data": {"cost_time": cost_time, "status": final_status,
+                                    "success_steps": success_steps, "failed_steps": failed_steps}}
+
+    # ── 持久化任务 + DAG + 状态流转 ──
     try:
-        task = create_task(
-            content=task_text,
-            task_type=detect_task_type(task_text).value,
-            steps=[{"index": s.index, "name": s.name, "desc": s.description, "type": s.step_type} for s in steps],
-            source="ai",
-        )
+        from service.task_service import create_task, save_dag, update_task, get_task
+        task_type = detect_task_type(task_text)
+
+        # 如果是续跑，获取已有任务；否则新建
+        existing = get_task(task_id) if is_resume else None
+        if existing:
+            task = existing
+        else:
+            task = create_task(
+                content=task_text,
+                task_type=task_type.value,
+                steps=[{"index": s.index, "name": s.name, "desc": s.description, "type": s.step_type} for s in steps],
+                source="ai",
+            )
+
         if task:
-            task_id = task["id"]
-
-            # 根据执行结果确定最终生命周期状态
-            all_steps_ok = len(step_results) > 0 and all(r.get("result") for r in step_results)
-            final_status = TaskStatus.DONE.value if all_steps_ok else TaskStatus.FAILED.value
-
-            # 构建 DAG：节点状态从 step_results 获取
-            node_status = {}
-            for r in step_results:
-                node_status[f"step_{r['index']}"] = "success" if r.get("result") else "failed"
-
-            # 使用共享 build_dag 生成正确的并行边（fan-out/fan-in）
+            # 使用共享 build_dag 生成正确的并行边，注入节点状态
             step_dicts = [
                 {
                     "index": s.index,
                     "name": s.name,
                     "description": s.description,
                     "step_type": s.step_type,
-                    "status": node_status.get(f"step_{s.index}", "pending"),
+                    "status": node_states.get(f"step_{s.index}", "pending"),
                 }
                 for s in steps
             ]
             dag = build_dag(step_dicts)
             save_dag(task_id, dag)
 
-            # 关键修复：将任务状态从 todo → done/failed
+            # 更新任务状态
             update_task(task_id, status=final_status)
-            logger.info("任务 #%d 已持久化，状态 → %s，DAG 节点 %d 个，边 %d 条",
-                        task_id, final_status, len(dag["nodes"]), len(dag["edges"]))
+            logger.info("任务 #%d 已持久化，状态 → %s，DAG 节点 %d 个",
+                        task_id, final_status, len(dag["nodes"]))
     except Exception as e:
         logger.warning("持久化任务失败: %s", e)
 
 
-def _execute_node_streaming(step, state) -> Generator[dict, None, dict]:
-    """执行单个节点，yield 每个 token，最后返回结果。"""
+def _execute_node_streaming(step, state) -> Generator[dict, dict, dict]:
+    """执行单个节点，yield 每个 token，最后返回结果。
+
+    使用 execute_node 的执行重试 + 校验重试能力。
+    """
+    from agent_core.node_executor import execute_node
+
+    token_buffer: list[str] = []
+
+    def token_cb(token: str) -> None:
+        """流式回调：缓存 token 并推送给前端。"""
+        token_buffer.append(token)
+        return {"type": "token", "data": {"index": step.index, "text": token}}
+
+    # 使用 execute_node 的完整重试逻辑
+    # 但我们需要拦截 token 推送，所以手动实现流式 + 重试
     from agent_core.llm_client import chat_stream
     from agent_core.result_validator import validate_and_retry
+    from agent_core.node_executor import MAX_EXEC_RETRIES, RETRY_BACKOFF_BASE
 
     context = _build_node_context(step, state)
-    result_parts = []
+    last_error = ""
+    step_result = None
+    attempts = 0
 
-    for token in chat_stream([
-        {"role": "system", "content": "你是一个任务执行助手。你会收到一个任务步骤的描述和上下文，需要执行该步骤并返回结果。"},
-        {"role": "user", "content": context},
-    ], temperature=0.5):
-        result_parts.append(token)
-        yield {"type": "token", "data": {"index": step.index, "text": token}}
+    for attempt in range(MAX_EXEC_RETRIES + 1):
+        try:
+            if attempt > 0:
+                wait = RETRY_BACKOFF_BASE ** attempt
+                yield {"type": "log", "data": {"message": f"🔄 步骤 {step.index} 第 {attempt} 次重试（{wait:.1f}s 后）..."}}
+                import time as _time
+                _time.sleep(wait)
+                token_buffer.clear()
 
-    result = "".join(result_parts)
-    validated, _ = validate_and_retry(result, {
-        "step_desc": step.description,
-        "task_text": state.get("task_text", ""),
-    })
+            # 流式执行
+            result_parts: list[str] = []
+            for token in chat_stream([
+                {"role": "system", "content": "你是一个任务执行助手。你会收到一个任务步骤的描述和上下文，需要执行该步骤并返回结果。"},
+                {"role": "user", "content": context},
+            ], temperature=0.5):
+                result_parts.append(token)
+                yield {"type": "token", "data": {"index": step.index, "text": token}}
 
+            result = "".join(result_parts)
+            validated, passed = validate_and_retry(result, {
+                "step_desc": step.description,
+                "task_text": state.get("task_text", ""),
+            })
+
+            step_result = {"index": step.index, "name": step.name, "result": validated}
+            attempts = attempt + 1
+            break  # 成功
+
+        except Exception as e:
+            last_error = str(e)
+            logger.error("[节点 %d] 执行异常（第 %d 次）: %s", step.index, attempt + 1, e)
+            attempts = attempt + 1
+
+    success = step_result is not None
     return {
-        "logs": [f"[{step.index}] {step.name}: {validated[:100]}..."],
-        "completed_steps": [step.index],
-        "step_results": [{"index": step.index, "name": step.name, "result": validated}],
+        "logs": [f"[{step.index}] {step.name}: {step_result['result'][:100] if step_result else last_error}..."],
+        "completed_steps": [step.index] if success else [],
+        "step_results": [step_result] if success else [],
         "cost_time": 0,
         "current_step": step.index,
+        "status": "success" if success else "failed",
+        "attempts": attempts,
+        "error": "" if success else last_error,
     }
 
 

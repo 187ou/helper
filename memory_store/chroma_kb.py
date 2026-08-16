@@ -181,6 +181,13 @@ def add_document(file_path: str, text: str, category: str, file_name: str = "") 
 
     collection.add(ids=ids, documents=chunks, embeddings=vectors, metadatas=metadatas)
 
+    # 增量更新 BM25 索引（保持与向量库同步）
+    try:
+        from memory_store.bm25_index import add_chunks_to_index
+        add_chunks_to_index(file_path, file_name or file_path, category, chunks, replace=True)
+    except Exception as e:
+        logger.warning("BM25 增量更新失败（不影响向量检索）: %s", e)
+
     logger.info("入库: %s (%d 切片) → %s", file_name or file_path, len(chunks), category)
     return {"status": "ok", "chunks": len(chunks), "category": category}
 
@@ -242,7 +249,7 @@ def search(query: str, category: str = "", top_k: int = 5, hybrid: bool = True) 
 
 
 def delete_document(file_path: str, category: str = "") -> int:
-    """删除文档的所有切片。"""
+    """删除文档的所有切片（同步 BM25 索引）。"""
     count = 0
     if category:
         coll = get_collection(category)
@@ -259,6 +266,15 @@ def delete_document(file_path: str, category: str = "") -> int:
                 if existing["ids"]:
                     coll.delete(ids=existing["ids"])
                     count += len(existing["ids"])
+
+    # 同步移除 BM25 索引
+    if count > 0:
+        try:
+            from memory_store.bm25_index import remove_document_from_index
+            remove_document_from_index(file_path)
+        except Exception as e:
+            logger.warning("BM25 索引移除失败: %s", e)
+
     return count
 
 

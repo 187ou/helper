@@ -1,8 +1,9 @@
-"""BM25 全文索引：基于 rank_bm25 实现关键词精确检索。"""
+"""BM25 全文索引：基于 rank_bm25 实现关键词精确检索（支持增量更新）。"""
 import json
 import logging
 import os
 import pickle
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,8 @@ logger = logging.getLogger(__name__)
 
 _INDEX_PATH = Path(CHROMA_DIR) / "bm25_index.pkl"
 _bm25 = None
-_doc_list = None  # 与 BM25 索引对应的文档列表
+_doc_list: list[dict[str, Any]] | None = None  # 与 BM25 索引对应的文档列表
+_index_lock = threading.Lock()  # 保护索引的线程安全
 
 
 def _tokenize(text: str) -> list[str]:
@@ -75,6 +77,115 @@ def _save_index():
         logger.warning("BM25 索引保存失败: %s", e)
 
 
+def _rebuild_and_save() -> None:
+    """用当前 _doc_list 重建 BM25 模型并持久化。"""
+    global _bm25
+    if not _doc_list:
+        _bm25 = None
+        return
+    try:
+        from rank_bm25 import BM25Okapi
+        tokenized = [_tokenize(d["text"]) for d in _doc_list]
+        _bm25 = BM25Okapi(tokenized)
+        _save_index()
+    except ImportError:
+        pass
+
+
+# ── 增量更新 API ──
+
+def add_chunks_to_index(file_path: str, file_name: str, category: str,
+                        chunks: list[str], replace: bool = True) -> int:
+    """增量添加文档切片到 BM25 索引。
+
+    在 Chroma 向量库新增文档后调用，保持 BM25 与向量库同步。
+
+    Args:
+        file_path: 文件路径（唯一标识）
+        file_name: 显示名
+        category: 分区 key
+        chunks: 文档切片文本列表
+        replace: 若为 True，先移除同文件旧切片（更新场景）
+
+    Returns:
+        新增的切片数量
+    """
+    global _doc_list
+
+    with _index_lock:
+        # 确保索引已初始化
+        ensure_index_locked()
+
+        if _doc_list is None:
+            _doc_list = []
+
+        # 如果是更新场景，先移除旧切片
+        if replace:
+            removed = sum(1 for d in _doc_list if d.get("file_path") == file_path)
+            if removed > 0:
+                _doc_list = [d for d in _doc_list if d.get("file_path") != file_path]
+                logger.info("BM25 移除旧切片: %s (%d 条)", file_path, removed)
+
+        # 添加新切片
+        added = 0
+        for chunk_text in chunks:
+            tokens = _tokenize(chunk_text)
+            if tokens:  # 只索引有意义的切片
+                _doc_list.append({
+                    "text": chunk_text,
+                    "file_name": file_name or file_path,
+                    "file_path": file_path,
+                    "category": category,
+                })
+                added += 1
+
+        if added > 0:
+            _rebuild_and_save()
+            logger.info("BM25 增量更新: +%d 切片（总计 %d）", added, len(_doc_list))
+
+        return added
+
+
+def remove_document_from_index(file_path: str) -> int:
+    """从 BM25 索引移除指定文档的所有切片。
+
+    在 Chroma 向量库删除文档后调用。
+
+    Args:
+        file_path: 文件路径
+
+    Returns:
+        移除的切片数量
+    """
+    global _doc_list
+
+    with _index_lock:
+        ensure_index_locked()
+
+        if not _doc_list:
+            return 0
+
+        new_list = [d for d in _doc_list if d.get("file_path") != file_path]
+        removed = len(_doc_list) - len(new_list)
+
+        if removed > 0:
+            _doc_list = new_list
+            _rebuild_and_save()
+            logger.info("BM25 移除文档: %s (%d 切片，剩余 %d）",
+                        file_path, removed, len(_doc_list))
+
+        return removed
+
+
+def ensure_index_locked() -> None:
+    """确保索引已初始化（调用者必须持有 _index_lock）。"""
+    global _bm25, _doc_list
+    if _bm25 is not None:
+        return
+    if not _load_index():
+        build_index()
+
+
 def _load_index():
     """加载索引。"""
     global _bm25, _doc_list
@@ -92,42 +203,43 @@ def _load_index():
 
 
 def ensure_index():
-    """确保索引可用。"""
+    """确保索引可用（线程安全）。"""
     global _bm25
     if _bm25 is not None:
         return
-    if not _load_index():
-        build_index()
+    with _index_lock:
+        ensure_index_locked()
 
 
 def search_bm25(query: str, top_k: int = 5) -> list[dict[str, Any]]:
-    """BM25 全文检索。"""
-    ensure_index()
-    if _bm25 is None or not _doc_list:
-        return []
-
-    tokens = _tokenize(query)
-    if not tokens:
-        return []
-
-    scores = _bm25.get_scores(tokens)
-    # 取 top_k
+    """BM25 全文检索（线程安全）。"""
     import numpy as np
-    top_indices = np.argsort(scores)[::-1][:top_k]
 
-    results = []
-    for idx in top_indices:
-        if scores[idx] <= 0:
-            continue
-        doc = _doc_list[idx]
-        results.append({
-            "text": doc["text"],
-            "file_name": doc["file_name"],
-            "file_path": doc["file_path"],
-            "category": doc["category"],
-            "score": float(scores[idx]),
-        })
-    return results
+    with _index_lock:
+        ensure_index_locked()
+        if _bm25 is None or not _doc_list:
+            return []
+
+        tokens = _tokenize(query)
+        if not tokens:
+            return []
+
+        scores = _bm25.get_scores(tokens)
+        top_indices = np.argsort(scores)[::-1][:top_k]
+
+        results = []
+        for idx in top_indices:
+            if scores[idx] <= 0:
+                continue
+            doc = _doc_list[idx]
+            results.append({
+                "text": doc["text"],
+                "file_name": doc["file_name"],
+                "file_path": doc["file_path"],
+                "category": doc["category"],
+                "score": float(scores[idx]),
+            })
+        return results
 
 
 def hybrid_search(query: str, category: str = "", top_k: int = 5, alpha: float = 0.5) -> list[dict[str, Any]]:

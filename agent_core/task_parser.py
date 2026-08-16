@@ -127,11 +127,19 @@ def _try_recommend_steps(task_text: str) -> tuple[list[dict], str] | None:
 
 
 def _parse_with_llm(task_text: str) -> list[TaskStep] | None:
-    """用 LLM 拆解任务。"""
+    """用 LLM 拆解任务（记忆增强）。"""
     try:
+        # 构建记忆增强上下文
+        memory_context = _build_memory_context_for_parse(task_text)
+
+        # 拼接 prompt：原始任务 + 记忆上下文
+        user_message = task_text
+        if memory_context:
+            user_message = f"{task_text}\n\n{memory_context}"
+
         resp = chat_json([
             {"role": "system", "content": _PARSE_SYSTEM_PROMPT},
-            {"role": "user", "content": task_text},
+            {"role": "user", "content": user_message},
         ])
         if "steps" not in resp:
             return None
@@ -145,11 +153,22 @@ def _parse_with_llm(task_text: str) -> list[TaskStep] | None:
                 description=s.get("description", ""),
                 step_type=s.get("step_type", "action"),
             ))
-        logger.info("LLM 拆解为 %d 个步骤", len(steps))
+        logger.info("LLM 拆解为 %d 个步骤（记忆增强: %s）", len(steps),
+                    "有" if memory_context else "无")
         return steps if steps else None
     except Exception as e:
         logger.error("LLM 拆解异常: %s", e)
         return None
+
+
+def _build_memory_context_for_parse(task_text: str) -> str:
+    """为任务拆解构建记忆上下文。"""
+    try:
+        from agent_core.memory_context import build_memory_context
+        return build_memory_context(task_text, top_k=2)
+    except Exception as e:
+        logger.debug("记忆上下文构建失败: %s", e)
+        return ""
 
 
 # ── 关键词（规则兜底用）──

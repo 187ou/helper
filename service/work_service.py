@@ -12,8 +12,12 @@ logger = logging.getLogger(__name__)
 
 
 def gen_weekly_report(work_items: list[str] | None = None, notes: str = "") -> dict[str, Any]:
-    """生成周报（LLM 生成）。"""
+    """生成周报（记忆增强：注入用户偏好）。"""
     items_text = "\n".join(f"- {item}" for item in (work_items or ["请补充本周工作内容"]))
+
+    # 注入用户偏好上下文
+    memory_ctx = _get_document_memory_context("周报")
+
     prompt = f"""请根据以下工作信息，生成一份简洁专业的周报。
 
 ## 本周工作
@@ -21,6 +25,7 @@ def gen_weekly_report(work_items: list[str] | None = None, notes: str = "") -> d
 
 ## 主要成果
 {items_text}
+{memory_ctx}
 
 要求：
 1. 包含"本周工作成果"和"下周计划"两部分
@@ -112,6 +117,19 @@ def archive_files(directory: str) -> dict[str, Any]:
     files = [str(f) for f in p.iterdir() if f.is_file()]
     classified = classify_files(files)
     return {"directory": directory, "total": len(files), "classified": classified}
+
+
+def _get_document_memory_context(task_hint: str) -> str:
+    """获取文书生成的记忆上下文（用户偏好 + 历史参考）。"""
+    try:
+        from agent_core.memory_context import build_memory_context
+        ctx = build_memory_context(task_hint, top_k=2)
+        if ctx:
+            return f"\n## 参考信息（根据您的历史和偏好）\n{ctx}"
+        return ""
+    except Exception as e:
+        logger.debug("文书记忆上下文获取失败: %s", e)
+        return ""
 
 
 def process_reimbursement(files: list[str], texts: list[str] | None = None) -> dict[str, Any]:

@@ -314,6 +314,10 @@ def run_stream(task_text: str, task_id: int | None = None,
             update_task(task_id, status=final_status)
             logger.info("任务 #%d 已持久化，状态 → %s，DAG 节点 %d 个",
                         task_id, final_status, len(dag["nodes"]))
+
+            # ── 任务产出自动归档到知识库（语义记忆扩展） ──
+            if final_status == TaskStatus.DONE.value and step_results:
+                _archive_task_results(task_text, step_results)
     except Exception as e:
         logger.warning("持久化任务失败: %s", e)
 
@@ -390,16 +394,61 @@ def _execute_node_streaming(step, state) -> Generator[dict, dict, dict]:
 
 
 def _build_node_context(step, state) -> str:
-    """构建节点执行上下文。"""
+    """构建节点执行上下文（记忆增强）。"""
     parts = [f"## 当前步骤\n名称: {step.name}\n描述: {step.description}"]
     prev_results = state.get("step_results", [])
     if prev_results:
         parts.append("\n## 前序步骤结果")
         for r in prev_results[-3:]:
             parts.append(f"- [{r['name']}] {r['result'][:200]}")
-    if state.get("task_text"):
-        parts.append(f"\n## 用户原始指令\n{state['task_text']}")
+
+    task_text = state.get("task_text", "")
+    if task_text:
+        parts.append(f"\n## 用户原始指令\n{task_text}")
+
+    # 添加记忆增强上下文
+    try:
+        from agent_core.memory_context import build_memory_context
+        memory = build_memory_context(f"{step.name} {task_text}", step_name=step.name, top_k=1)
+        if memory:
+            parts.append(f"\n{memory}")
+    except Exception:
+        pass
+
     return "\n".join(parts)
+
+
+def _archive_task_results(task_text: str, step_results: list[dict]) -> None:
+    """将任务产出归档到知识库（异步，不阻塞）。"""
+    try:
+        from agent_core.memory_context import archive_task_output
+
+        # 拼接所有步骤结果
+        output_parts = []
+        for r in step_results:
+            name = r.get("name", "")
+            result = r.get("result", "")
+            if result:
+                output_parts.append(f"### {name}\n{result}")
+
+        if not output_parts:
+            return
+
+        output_text = f"# 任务产出：{task_text}\n\n" + "\n\n".join(output_parts)
+
+        # 确定分类
+        task_type = detect_task_type(task_text).value
+        category_map = {"work": "work_doc", "life": "personal", "health": "personal", "mix": "work_doc"}
+        category = category_map.get(task_type, "work_doc")
+
+        archive_task_output(
+            task_text=task_text,
+            output_text=output_text,
+            category=category,
+            file_name=f"产出_{task_text[:15]}",
+        )
+    except Exception as e:
+        logger.debug("任务产出归档失败: %s", e)
 
 
 def _save_task(result: dict, task_type) -> None:

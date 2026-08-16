@@ -250,11 +250,36 @@ def _rule_score(result: dict[str, Any], task_type: str) -> dict[str, Any]:
     else:
         efficiency = 60
 
-    # 3. 质量
+    # 3. 质量（信息密度：有效内容占比，而非单纯文本长度）
     if step_results:
         try:
-            avg_len = safe_avg([len(str(r.get("result", ""))) for r in step_results])
-            quality = clamp_value(int(avg_len / 2), 0, 100)
+            # 计算每个结果的信息密度：有效字符数 / 总长度
+            # 有效内容 = 非空、非纯错误标记、有实际信息量的输出
+            info_scores = []
+            error_markers = ["[llm 调用失败", "请求超时", "api error", "connection error", "[异常]"]
+            for r in step_results:
+                text = str(r.get("result", ""))
+                if not text.strip():
+                    info_scores.append(0)
+                    continue
+                # 错误输出直接低分
+                if any(m in text.lower() for m in error_markers):
+                    info_scores.append(20)
+                    continue
+                # 信息密度：长度适中（50-500字）得分高，过短或冗余过长得分低
+                text_len = len(text.strip())
+                if 50 <= text_len <= 500:
+                    density = 85
+                elif 20 <= text_len < 50:
+                    density = 60
+                elif 500 < text_len <= 2000:
+                    density = 70  # 较长但可能有用
+                elif text_len < 20:
+                    density = 30
+                else:
+                    density = 40  # 过长可能冗余
+                info_scores.append(density)
+            quality = clamp_value(int(safe_avg(info_scores)), 0, 100)
         except Exception:
             quality = 50
     else:

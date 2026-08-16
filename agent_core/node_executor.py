@@ -103,7 +103,7 @@ def execute_node(step: TaskStep, state: dict,
 
 
 def _build_context(step: TaskStep, state: dict) -> str:
-    """构建节点执行的上下文。"""
+    """构建节点执行的上下文（记忆增强）。"""
     parts = [f"## 当前步骤\n名称: {step.name}\n描述: {step.description}"]
 
     # 添加已完成步骤的结果
@@ -114,7 +114,25 @@ def _build_context(step: TaskStep, state: dict) -> str:
             parts.append(f"- [{r['name']}] {r['result'][:200]}")
 
     # 添加用户原始指令
-    if state.get("task_text"):
-        parts.append(f"\n## 用户原始指令\n{state['task_text']}")
+    task_text = state.get("task_text", "")
+    if task_text:
+        parts.append(f"\n## 用户原始指令\n{task_text}")
+
+    # 添加记忆增强上下文（偏好 + 知识）
+    memory = _build_memory_for_step(step, task_text)
+    if memory:
+        parts.append(f"\n{memory}")
 
     return "\n".join(parts)
+
+
+def _build_memory_for_step(step: TaskStep, task_text: str) -> str:
+    """为节点执行构建记忆片段。"""
+    try:
+        from agent_core.memory_context import build_memory_context
+        # 用步骤名 + 任务文本做更精准的检索
+        query = f"{step.name} {task_text}"
+        return build_memory_context(query, step_name=step.name, top_k=1)
+    except Exception as e:
+        logger.debug("节点记忆构建失败: %s", e)
+        return ""

@@ -194,6 +194,33 @@ def run_stream(task_text: str, task_id: int | None = None,
         },
     }
 
+    # ── 主动回忆提醒 + 情感检测 + 需求预测 ──
+    try:
+        from agent_core.memory_context import check_proactive_reminder
+        reminder = check_proactive_reminder(task_text)
+        if reminder:
+            yield {"type": "reminder", "data": {"message": reminder}}
+    except Exception:
+        pass
+
+    # 情感检测
+    try:
+        from agent_core.emotional_memory import record_emotion
+        emotion = record_emotion(task_id, text, source="user_input")
+        if emotion and emotion.get("emotion") != "neutral":
+            yield {"type": "emotion", "data": {"emotion": emotion["emotion"], "label": emotion["emotion_label"]}}
+    except Exception:
+        pass
+
+    # 需求预测
+    try:
+        from agent_core.proactive_reasoning import predict_next_needs
+        predictions = predict_next_needs(task_text, detect_task_type(task_text).value)
+        if predictions:
+            yield {"type": "prediction", "data": {"predictions": predictions[:3]}}
+    except Exception:
+        pass
+
     # ── 恢复已有状态（断点续跑） ──
     step_results: list[dict] = []
     node_states: dict[str, str] = {}  # step_id → status
@@ -212,12 +239,25 @@ def run_stream(task_text: str, task_id: int | None = None,
                 logger.info("断点续跑: 任务 #%d，从步骤 %d 继续，恢复 %d 步结果",
                             task_id, resume_from, restored_count)
                 yield {"type": "log", "data": {"message": f"断点续跑：从步骤 {resume_from + 1} 继续（已恢复 {restored_count} 步结果）"}}
+
+            # 恢复工作记忆（断点续跑时恢复上下文）
+            from agent_core.working_memory import restore_working_memory_from_task
+            wm = restore_working_memory_from_task(task_id)
+            if wm:
+                logger.info("工作记忆已恢复: task #%d（目标: %s）", task_id, wm.task_goal[:50])
         except Exception as e:
             logger.warning("恢复状态失败，从头执行: %s", e)
             is_resume = False
             resume_from = None
 
-    # 2. 逐个步骤执行 + 流式输出
+    # 2. 初始化工作记忆
+    from agent_core.working_memory import get_working_memory
+    wm = get_working_memory(task_id, task_text, steps)
+    # 从拆解结果推断任务目标
+    if steps:
+        wm.update_goal(f"{task_text}（{len(steps)} 步）")
+
+    # 3. 逐个步骤执行 + 流式输出
     start = time.time()
 
     try:
@@ -227,7 +267,6 @@ def run_stream(task_text: str, task_id: int | None = None,
             # 断点续跑：跳过已成功的步骤
             if is_resume and resume_from is not None and step.index < resume_from:
                 if node_states.get(nid) == "success":
-                    # 注入已完成的结果作为上下文
                     logger.info("[节点 %d] 跳过（已完成）", step.index)
                     continue
 
@@ -235,6 +274,7 @@ def run_stream(task_text: str, task_id: int | None = None,
             node_states[nid] = "running"
             yield {"type": "step_start", "data": {"index": step.index, "name": step.name}}
 
+            # 构建 state（含工作记忆）
             state = {
                 "task_text": task_text,
                 "logs": [],
@@ -242,19 +282,22 @@ def run_stream(task_text: str, task_id: int | None = None,
                 "step_results": step_results,
                 "cost_time": 0,
                 "current_step": step.index - 1,
+                "working_memory": wm.get_context_summary(),  # 工作记忆注入
             }
 
             # 执行节点并流式推送 token（含执行重试）
             result = yield from _execute_node_streaming(step, state)
 
-            # 更新节点状态
+            # 更新节点状态和工作记忆
             node_states[nid] = result.get("status", "failed")
             if result.get("status") == "success":
+                step_result_text = result.get("step_results", [{}])[0].get("result", "")
                 step_results.extend(result.get("step_results", []))
+                wm.record_step_completion(step.name, result.get("step_results", [{}])[0].get("result", ""))
                 yield {"type": "step_done", "data": {"index": step.index, "name": step.name, "status": "success"}}
             else:
                 yield {"type": "step_done", "data": {"index": step.index, "name": step.name, "status": "failed"}}
-                yield {"type": "log", "data": {"message": f"❌ 步骤 {step.index} 执行失败: {result.get('error', '未知错误')}"}}
+                yield {"type": "log", "data": {"message": f"步骤 {step.index} 执行失败: {result.get('error', '未知错误')}"}}
                 # 失败不立即终止，继续执行后续步骤（部分成功策略）
 
     except Exception as e:
@@ -325,9 +368,36 @@ def run_stream(task_text: str, task_id: int | None = None,
             logger.info("任务 #%d 已持久化，状态 → %s，DAG 节点 %d 个",
                         task_id, final_status, len(dag["nodes"]))
 
-            # ── 任务产出自动归档到知识库（语义记忆扩展） ──
-            if final_status == TaskStatus.DONE.value and step_results:
-                _archive_task_results(task_text, step_results)
+            # ── 任务完成后处理（归档 + 索引） ──
+            if final_status == TaskStatus.DONE.value:
+                avg_score = _calc_avg_step_score(step_results) if step_results else 0
+
+                # 产出归档到知识库
+                if step_results:
+                    _archive_task_results(task_text, step_results, score=avg_score, task_id=task_id)
+
+                # 工作记忆归档
+                from agent_core.working_memory import archive_working_memory_to_episodic
+                archive_working_memory_to_episodic(task_id)
+
+                # 添加到语义索引（情景记忆语义化）
+                from memory_store.episodic_index import add_task_to_index
+                add_task_to_index(
+                    task_id=task_id,
+                    task_text=task_text,
+                    task_type=detect_task_type(task_text).value,
+                    score=avg_score,
+                )
+
+                # 自动创建记忆关联
+                from agent_core.memory_graph import auto_discover_links
+                auto_discover_links(task_text, detect_task_type(task_text).value, task_id)
+
+                # 事件触发检测（任务完成时检查是否有事件匹配）
+                from agent_core.prospective_memory import _check_event_triggers
+                event_due = _check_event_triggers(task_text, datetime.now())
+                for e in event_due:
+                    yield {"type": "event_triggered", "data": {"message": f"事件触发: {e.get('user_intent', '')[:50]}", "reminder": e}}
     except Exception as e:
         logger.warning("持久化任务失败: %s", e)
 
@@ -513,8 +583,9 @@ def _build_node_context(step, state) -> str:
     return "\n".join(parts)
 
 
-def _archive_task_results(task_text: str, step_results: list[dict]) -> None:
-    """将任务产出归档到知识库（异步，不阻塞）。"""
+def _archive_task_results(task_text: str, step_results: list[dict],
+                          score: float = 0, task_id: int = 0) -> None:
+    """将任务产出归档到知识库（含评分和反馈元数据）。"""
     try:
         from agent_core.memory_context import archive_task_output
 
@@ -541,9 +612,33 @@ def _archive_task_results(task_text: str, step_results: list[dict]) -> None:
             output_text=output_text,
             category=category,
             file_name=f"产出_{task_text[:15]}",
+            score=score,
+            task_id=task_id,
         )
     except Exception as e:
         logger.debug("任务产出归档失败: %s", e)
+
+
+def _calc_avg_step_score(step_results: list[dict]) -> float:
+    """计算步骤结果的平均质量分（基于输出长度和信息密度）。"""
+    if not step_results:
+        return 0
+    scores = []
+    for r in step_results:
+        text = str(r.get("result", ""))
+        if not text:
+            continue
+        # 简单质量评估：长度适中（50-500字）得分高
+        length = len(text.strip())
+        if 50 <= length <= 500:
+            scores.append(85)
+        elif 20 <= length < 50:
+            scores.append(60)
+        elif length < 20:
+            scores.append(30)
+        else:
+            scores.append(70)
+    return sum(scores) / len(scores) if scores else 0
 
 
 def _save_task(result: dict, task_type) -> None:

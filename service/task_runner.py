@@ -37,6 +37,9 @@ def start(main_window=None) -> None:
     # 每日凌晨 02:00 执行遗忘周期（清理过期权重/偏好/模式）
     schedule.every().day.at("02:00").do(_forgetting_cycle)
 
+    # 每 15 分钟检查前瞻记忆提醒
+    schedule.every(15).minutes.do(_check_prospective_reminders)
+
     _thread = threading.Thread(target=_run_loop, daemon=True)
     _thread.start()
     logger.info("定时任务调度器启动")
@@ -81,10 +84,40 @@ def _evening_archive() -> None:
 
 
 def _forgetting_cycle() -> None:
-    """遗忘周期：清理过期数据，防止演化引擎越来越"脏"。"""
+    """遗忘周期：清理过期数据 + 记忆巩固。"""
+    # 1. 遗忘衰减
     try:
         from evolution_core.forgetting import run_forgetting_cycle
         result = run_forgetting_cycle()
         logger.info("遗忘周期完成: %s", result)
     except Exception as e:
         logger.error("遗忘周期执行失败: %s", e)
+
+    # 2. 记忆巩固（将碎片凝结为知识）
+    try:
+        from agent_core.memory_consolidation import run_consolidation
+        result = run_consolidation(days=1)
+        logger.info("记忆巩固完成: %s", result.get("reflection", ""))
+    except Exception as e:
+        logger.error("记忆巩固执行失败: %s", e)
+
+    # 3. 工作记忆清理（防止内存泄漏）
+    try:
+        from agent_core.working_memory import cleanup_stale_working_memories
+        cleaned = cleanup_stale_working_memories(max_age_hours=24)
+        if cleaned > 0:
+            logger.info("工作记忆清理: %d 条过期", cleaned)
+    except Exception as e:
+        logger.debug("工作记忆清理失败: %s", e)
+
+
+def _check_prospective_reminders() -> None:
+    """检查前瞻记忆提醒（每 15 分钟检查一次）。"""
+    try:
+        from agent_core.prospective_memory import check_due_reminders
+        due = check_due_reminders()
+        for r in due:
+            logger.info("前瞻提醒触发: %s (优先级 %d)", r.get("user_intent", "")[:50], r.get("priority", 1))
+            # TODO: 推送到前端（WebSocket/SSE）或系统通知
+    except Exception as e:
+        logger.debug("前瞻提醒检查失败: %s", e)

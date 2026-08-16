@@ -23,14 +23,14 @@ def _get_execute_prompt() -> str:
 
 
 # 向后兼容
-_get_execute_prompt_static() = None
+_EXECUTE_PROMPT_CACHE = None
 
 
 def _get_execute_prompt_static() -> str:
-    global _get_execute_prompt_static()
-    if _get_execute_prompt_static() is None:
-        _get_execute_prompt_static() = _get_execute_prompt()
-    return _get_execute_prompt_static()
+    global _EXECUTE_PROMPT_CACHE
+    if _EXECUTE_PROMPT_CACHE is None:
+        _EXECUTE_PROMPT_CACHE = _get_execute_prompt()
+    return _EXECUTE_PROMPT_CACHE
 
 # ── 重试配置 ──
 MAX_EXEC_RETRIES = 2       # 执行失败最大重试次数
@@ -122,8 +122,20 @@ def _build_context(step: TaskStep, state: dict) -> str:
     task_text = state.get("task_text", "")
     prev_results = state.get("step_results", [])
 
-    # 构建记忆增强上下文
+    # 构建记忆增强上下文（含个性化指导 + 关联记忆）
     memory = _build_memory_for_step(step, task_text)
+
+    # 注入个性化指导 + 情绪适配
+    try:
+        from agent_core.user_model import get_personalized_guidance
+        from agent_core.emotional_memory import get_emotional_guidance
+        guidance = get_personalized_guidance(detect_task_type_local(task_text))
+        emotional = get_emotional_guidance()
+        combined = "\n".join(filter(None, [guidance, emotional]))
+        if combined:
+            memory = f"{combined}\n\n{memory}" if memory else combined
+    except Exception:
+        pass
 
     # 格式化前序步骤结果
     prior_texts = []
@@ -147,12 +159,45 @@ def _build_context(step: TaskStep, state: dict) -> str:
 
 
 def _build_memory_for_step(step: TaskStep, task_text: str) -> str:
-    """为节点执行构建记忆片段。"""
+    """为节点执行构建记忆片段（偏好 + 历史 + 知识）。"""
     try:
         from agent_core.memory_context import build_memory_context
-        # 用步骤名 + 任务文本做更精准的检索
+        from evolution_core.feedback_learner import generate_execution_guidance
+
+        # 1. 基础记忆上下文（历史参考 + 知识片段）
         query = f"{step.name} {task_text}"
-        return build_memory_context(query, step_name=step.name, top_k=1)
+        base_memory = build_memory_context(query, step_name=step.name, top_k=1)
+
+        # 2. 偏好指导摘要（高置信度偏好直接注入）
+        task_type = _detect_task_type_simple_local(task_text)
+        guidance = generate_execution_guidance(task_type)
+
+        # 3. 拼接：偏好指导优先级更高
+        parts = []
+        if guidance:
+            parts.append(f"## 用户偏好\n{guidance}")
+        if base_memory:
+            parts.append(base_memory)
+
+        return "\n\n".join(parts) if parts else ""
     except Exception as e:
         logger.debug("节点记忆构建失败: %s", e)
         return ""
+
+
+def _detect_task_type_simple_local(task_text: str) -> str:
+    """推断任务类型（本地副本避免循环导入）。"""
+    work_keywords = ["周报", "月报", "日报", "报销", "会议", "Excel", "PDF", "合同", "文书", "归档", "项目"]
+    life_keywords = ["记账", "开销", "购物", "家务", "出行", "健身", "睡眠", "饮食"]
+    for kw in work_keywords:
+        if kw in task_text:
+            return "work"
+    for kw in life_keywords:
+        if kw in task_text:
+            return "life"
+    return "work"
+
+
+def detect_task_type_local(task_text: str) -> str:
+    """推断任务类型（本地副本，避免循环导入）。"""
+    return _detect_task_type_simple_local(task_text)

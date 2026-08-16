@@ -100,12 +100,19 @@ def parse_with_source(task_text: str) -> tuple[list[TaskStep], dict[str, Any]]:
         ]
         logger.info("演化推荐命中 [%s]: %d 步 — %s", source, len(steps), task_text[:40])
 
-        # 构造来源信息
+        # 构造来源信息（含程序性记忆）
         source_info = {
             "source": source,
             "source_label": _get_source_label(source),
             "template_name": _extract_template_name(raw_steps, source),
         }
+
+        # 如果是模板命中，附加程序性记忆（决策规则/成功经验）
+        if source == "template":
+            procedural = _get_procedural_memory(source_info.get("template_name", ""))
+            if procedural:
+                source_info["procedural_memory"] = procedural
+
         return steps, source_info
 
     # ── 优先级 2：LLM 拆解 ──
@@ -133,9 +140,32 @@ def _get_source_label(source: str) -> str:
 def _extract_template_name(raw_steps: list[dict], source: str) -> str:
     """从命中的模板提取名称（用于前端展示）。"""
     if source == "template" and raw_steps:
-        # 模板通常以第一个步骤名或描述中的关键词标识
         return raw_steps[0].get("name", "默认模板")[:20]
     return ""
+
+
+def _get_procedural_memory(habit_key: str) -> dict | None:
+    """获取模板的程序性记忆（决策规则+成功经验+常见错误）。"""
+    if not habit_key:
+        return None
+    try:
+        from evolution_core.template_save import get_template
+        tpl = get_template(habit_key)
+        if not tpl:
+            return None
+
+        # 只返回有数据的字段
+        memory = {}
+        if tpl.get("decision_rules"):
+            memory["decision_rules"] = tpl["decision_rules"]
+        if tpl.get("success_patterns"):
+            memory["success_patterns"] = tpl["success_patterns"]
+        if tpl.get("common_mistakes"):
+            memory["common_mistakes"] = tpl["common_mistakes"]
+
+        return memory if memory else None
+    except Exception:
+        return None
 
 
 def _try_recommend_steps(task_text: str) -> tuple[list[dict], str] | None:

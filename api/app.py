@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import chat, schedule, evolution, knowledge, settings, task, search, behavior, evo_config, work, life, note, ai, system, tool, feedback
+from api import chat, schedule, evolution, knowledge, settings, task, search, behavior, evo_config, work, life, note, ai, system, tool, feedback, prospective, consolidation, metamemory, user_model, reflection, memory_full
 
 app = FastAPI(title="桌面智能助手 API", version="1.0.0")
 
@@ -32,6 +32,12 @@ app.include_router(ai.router, prefix="/api/ai", tags=["ai"])
 app.include_router(system.router, prefix="/api/system", tags=["system"])
 app.include_router(tool.router, prefix="/api/tool", tags=["tool"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
+app.include_router(prospective.router, prefix="/api/prospective", tags=["prospective"])
+app.include_router(consolidation.router, prefix="/api/consolidation", tags=["consolidation"])
+app.include_router(metamemory.router, prefix="/api/metamemory", tags=["metamemory"])
+app.include_router(user_model.router, prefix="/api/user-model", tags=["user-model"])
+app.include_router(memory_full.router, prefix="/api/memory", tags=["memory"])
+app.include_router(reflection.router, prefix="/api/reflection", tags=["reflection"])
 
 
 @app.get("/api/health")

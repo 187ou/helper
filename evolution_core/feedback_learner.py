@@ -334,7 +334,7 @@ def _detect_style(text: str) -> str:
 
 
 def _store_preference(key: str, value: Any, evidence: str, task_type: str = "") -> None:
-    """存储或更新偏好。"""
+    """存储或更新偏好（含元记忆追踪）。"""
     if not key:
         return
 
@@ -362,13 +362,29 @@ def _store_preference(key: str, value: Any, evidence: str, task_type: str = "") 
                 ),
             )
         else:
+            new_evidence = 1
+            new_confidence = 0.5
             conn.execute(
                 """INSERT INTO user_preference
                    (pref_key, pref_value, confidence, evidence_count, last_evidence)
-                   VALUES (?, ?, 0.5, 1, ?)""",
-                (key, safe_json_dumps(value), evidence),
+                   VALUES (?, ?, ?, ?, ?)""",
+                (key, safe_json_dumps(value), new_confidence, new_evidence, evidence),
             )
         conn.commit()
+
+        # 元记忆追踪（记录信息来源和置信度）
+        try:
+            from agent_core.metamemory import track_memory
+            track_memory(
+                memory_type="preference",
+                memory_key=key,
+                source="user_feedback",
+                confidence=new_confidence,
+                evidence_count=new_evidence,
+                metadata={"task_type": task_type, "evidence": evidence[:100]},
+            )
+        except Exception:
+            pass
     except Exception as e:
         logger.warning("偏好存储失败: %s", e)
     finally:

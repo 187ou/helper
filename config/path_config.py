@@ -27,6 +27,7 @@ USER_DATA_DIR = ROOT_DIR / "user_data"
 # 各子目录
 DB_DIR = USER_DATA_DIR / "db"
 CHROMA_DIR = USER_DATA_DIR / "chroma"
+EPISODIC_DIR = USER_DATA_DIR / "episodic"  # 情景记忆向量索引
 TEMPLATES_DIR = USER_DATA_DIR / "templates"
 LOGS_DIR = USER_DATA_DIR / "logs"
 ARCHIVE_DIR = USER_DATA_DIR / "archive"
@@ -41,5 +42,5 @@ APP_LOG_PATH = LOGS_DIR / "app.log"
 
 def ensure_dirs() -> None:
     """确保所有必要目录存在。"""
-    for d in [DB_DIR, CHROMA_DIR, TEMPLATES_DIR, LOGS_DIR, ARCHIVE_DIR]:
+    for d in [DB_DIR, CHROMA_DIR, EPISODIC_DIR, TEMPLATES_DIR, LOGS_DIR, ARCHIVE_DIR]:
         d.mkdir(parents=True, exist_ok=True)

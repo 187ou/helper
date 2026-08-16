@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS task_list (
     related_doc TEXT DEFAULT '',
     dag_json TEXT DEFAULT '',
     source TEXT DEFAULT 'manual',
+    task_goal TEXT DEFAULT '',                      # 任务目标（工作记忆）
+    key_decisions TEXT DEFAULT '[]',                # 关键决策 JSON
+    related_preferences TEXT DEFAULT '[]',          # 涉及偏好 JSON
     create_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
     update_time TEXT DEFAULT ''
 );
@@ -213,7 +216,84 @@ CREATE TABLE IF NOT EXISTS user_feedback (
     diff_summary TEXT,                           # 差异摘要
     task_type TEXT DEFAULT '',                   # 任务类型
     context TEXT DEFAULT '',                     # 上下文 JSON
+    processed INTEGER NOT NULL DEFAULT 0,        # 是否已被演化闭环处理
     create_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+
+# ── 记忆巩固记录 ──
+CREATE TABLE IF NOT EXISTS consolidation_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    consolidation_type TEXT NOT NULL,            # 类型: pattern_extract / preference_strengthen / insight_generate / cleanup
+    source_count INTEGER DEFAULT 0,              # 处理了多少条源记忆
+    result_summary TEXT NOT NULL,                # 巩固结果摘要
+    result_detail TEXT DEFAULT '',               # 详细结果 JSON
+    period_start TEXT,                           # 周期开始
+    period_end TEXT,                             # 周期结束
+    create_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+
+# ── 元记忆：记忆系统自身的状态监控 ──
+CREATE TABLE IF NOT EXISTS metamemory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_type TEXT NOT NULL,                   # 记忆类型: episodic / preference / procedural / semantic / prospective
+    memory_key TEXT NOT NULL,                    # 记忆标识
+    source TEXT DEFAULT '',                      # 信息来源: user_feedback / consolidation / manual / llm_inference
+    confidence REAL DEFAULT 0.5,                 # 置信度
+    evidence_count INTEGER DEFAULT 0,            # 证据数
+    last_verified TEXT DEFAULT '',               # 最后验证时间
+    is_conflicting INTEGER DEFAULT 0,            # 是否与其他记忆冲突
+    conflict_with TEXT DEFAULT '',               # 与哪些记忆冲突
+    freshness TEXT DEFAULT '',                   # 新鲜度: fresh / stale / expired
+    metadata TEXT DEFAULT '{}',                  # 额外元数据 JSON
+    update_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+
+# ── 关联记忆：记忆之间的关联图 ──
+CREATE TABLE IF NOT EXISTS memory_link (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type TEXT NOT NULL,                    # 源记忆类型
+    source_key TEXT NOT NULL,                     # 源记忆标识
+    target_type TEXT NOT NULL,                    # 目标记忆类型
+    target_key TEXT NOT NULL,                     # 目标记忆标识
+    relation TEXT NOT NULL,                       # 关联类型
+    strength REAL DEFAULT 0.5,                    # 关联强度 0-1
+    note TEXT DEFAULT '',                         # 关联说明
+    create_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE(source_type, source_key, target_type, target_key, relation)
+);
+
+# ── 情感记忆：用户情绪追踪 ──
+CREATE TABLE IF NOT EXISTS emotional_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER DEFAULT 0,                   # 关联任务
+    emotion TEXT NOT NULL,                       # 情绪类型: positive / negative / anxious / bored
+    emotion_label TEXT DEFAULT '',               # 中文标签
+    intensity REAL DEFAULT 0,                    # 情绪强度 0-1
+    direction TEXT DEFAULT 'neutral',            # positive / negative / neutral
+    confidence REAL DEFAULT 0,                   # 检测置信度
+    keywords TEXT DEFAULT '[]',                  # 触发关键词 JSON
+    source TEXT DEFAULT 'user_input',            # 来源
+    create_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+
+# ── 前瞻记忆：承诺与提醒 ──
+CREATE TABLE IF NOT EXISTS prospective_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_intent TEXT NOT NULL,                   # 用户原始意图（"记住下周三提醒我交周报"）
+    trigger_type TEXT NOT NULL DEFAULT 'time',   # 触发类型: time / event / condition
+    trigger_value TEXT NOT NULL,                 # 触发值（时间/事件/条件）
+    trigger_time TEXT DEFAULT '',                # 触发时间（time 类型）
+    trigger_event TEXT DEFAULT '',               # 触发事件（event 类型）
+    trigger_condition TEXT DEFAULT '',           # 触发条件（condition 类型）
+    priority INTEGER DEFAULT 1,                  # 优先级: 0=低 1=中 2=高
+    status TEXT DEFAULT 'pending',               # pending / triggered / completed / dismissed
+    recurrence TEXT DEFAULT '',                  # 周期性: daily / weekly / monthly / ''
+    last_triggered TEXT DEFAULT '',              # 上次触发时间
+    trigger_count INTEGER DEFAULT 0,             # 已触发次数
+    max_triggers INTEGER DEFAULT 0,              # 最大触发次数（0=无限）
+    note TEXT DEFAULT '',                        # 备注
+    created_time TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    update_time TEXT DEFAULT ''
 );
 
 # ── 演化引擎深化：个性化偏好画像 ──
@@ -318,6 +398,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "related_doc": "TEXT DEFAULT ''",
         "dag_json": "TEXT DEFAULT ''",
         "source": "TEXT DEFAULT 'manual'",
+        "task_goal": "TEXT DEFAULT ''",
+        "key_decisions": "TEXT DEFAULT '[]'",
+        "related_preferences": "TEXT DEFAULT '[]'",
         "update_time": "TEXT DEFAULT ''",
     }
     for col, typ in needed_cols.items():
@@ -327,6 +410,28 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 logger.info("迁移：task_list 新增列 %s", col)
             except sqlite3.OperationalError as e:
                 logger.warning("迁移列 %s 失败: %s", col, e)
+
+    # prospective_memory 新增列检测
+    prospective_cols = {row[1] for row in conn.execute("PRAGMA table_info(prospective_memory)").fetchall()}
+    if "priority" not in prospective_cols:
+        try:
+            conn.execute("ALTER TABLE prospective_memory ADD COLUMN priority INTEGER DEFAULT 1")
+        except sqlite3.OperationalError:
+            pass
+    if "recurrence" not in prospective_cols:
+        try:
+            conn.execute("ALTER TABLE prospective_memory ADD COLUMN recurrence TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+
+    # user_feedback 新增 processed 列（反馈学习标记）
+    fb_cols = {row[1] for row in conn.execute("PRAGMA table_info(user_feedback)").fetchall()}
+    if "processed" not in fb_cols:
+        try:
+            conn.execute("ALTER TABLE user_feedback ADD COLUMN processed INTEGER NOT NULL DEFAULT 0")
+            logger.info("迁移：user_feedback 新增列 processed")
+        except sqlite3.OperationalError as e:
+            logger.warning("迁移列 processed 失败: %s", e)
 
     # evolution_config 默认值
     defaults = {

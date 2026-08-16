@@ -365,13 +365,17 @@ def _learn_from_task_feedback(task_id: int, task_text: str, task_type: str) -> N
 
     try:
         from memory_store.sqlite_db import get_conn
-        from evolution_core.feedback_learner import get_all_preferences, generate_execution_guidance
+        from evolution_core.feedback_learner import (
+            generate_execution_guidance, get_all_preferences,
+            _store_preference, _detect_style
+        )
 
         conn = get_conn()
         try:
-            # 查询该任务的最新反馈
+            # 查询该任务的新反馈（未处理的）
             rows = conn.execute(
-                """SELECT * FROM user_feedback WHERE task_id = ?
+                """SELECT * FROM user_feedback
+                   WHERE task_id = ? AND processed = 0
                    ORDER BY create_time DESC LIMIT 5""",
                 (task_id,),
             ).fetchall()
@@ -381,15 +385,70 @@ def _learn_from_task_feedback(task_id: int, task_text: str, task_type: str) -> N
         if not rows:
             return
 
-        logger.info("任务 #%d 有 %d 条用户反馈，触发反馈学习", task_id, len(rows))
+        logger.info("任务 #%d 有 %d 条新反馈，触发反馈学习", task_id, len(rows))
 
-        # 获取当前偏好摘要（用于日志/调试）
+        # 处理每条反馈
+        for row in rows:
+            feedback_type = row["feedback_type"]
+            original = row["original_content"]
+            modified = row["modified_content"]
+
+            if feedback_type == "praise" and original:
+                # 点赞：强化当前风格偏好
+                style = _detect_style(original)
+                _store_preference(f"type:{task_type}:style", style, f"用户点赞确认: {style}", task_type)
+                logger.info("偏好强化: 用户认可{type}类任务的{style}风格".format(type=task_type, style=style))
+
+            elif feedback_type == "modify" and original and modified:
+                # 修改：分析差异并学习偏好
+                _learn_from_modification(original, modified, task_type)
+
+            elif feedback_type == "reject":
+                # 驳回：降低当前策略权重
+                _store_preference(f"type:{task_type}:last_strategy", "rejected", "用户驳回上次输出", task_type)
+
+        # 标记反馈为已处理
+        _mark_feedback_processed(task_id)
+
+        # 获取更新后的偏好摘要
         guidance = generate_execution_guidance(task_type)
         if guidance:
-            logger.info("当前偏好指导: %s", guidance[:100])
+            logger.info("更新后的偏好指导: %s", guidance[:100])
 
     except Exception as e:
-        logger.debug("反馈学习失败: %s", e)
+        logger.warning("反馈学习失败: %s", e)
+
+
+def _learn_from_modification(original: str, modified: str, task_type: str) -> None:
+    """从用户修改中学习偏好规则。"""
+    from evolution_core.feedback_learner import _analyze_modification, _store_preference
+
+    diff = _analyze_modification(original, modified)
+    if diff and diff.get("key"):
+        _store_preference(
+            diff["key"],
+            diff.get("value", ""),
+            diff.get("evidence", "用户修改"),
+            task_type,
+        )
+        logger.info("偏好学习: %s = %s", diff["key"], diff.get("value"))
+
+
+def _mark_feedback_processed(task_id: int) -> None:
+    """标记反馈为已处理。"""
+    try:
+        from memory_store.sqlite_db import get_conn
+        conn = get_conn()
+        try:
+            conn.execute(
+                "UPDATE user_feedback SET processed = 1 WHERE task_id = ?",
+                (task_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug("标记反馈处理状态失败: %s", e)
 
 
 def shutdown_async_evolution() -> None:

@@ -58,13 +58,17 @@ def check_and_save_template(task_text: str, steps: list[dict]) -> dict[str, Any]
         logger.info("模板已存在: %s", habit_key)
         return None
 
-    # 固化模板
+    # 固化模板（含程序性记忆：决策规则 + 成功经验）
     flow = {
         "source_task": task_text,
         "habit_key": habit_key,
         "freq_count": habit["freq_count"],
         "avg_score": round(avg_score, 1),
         "steps": steps,
+        # ── 程序性记忆新增 ──
+        "decision_rules": _extract_decision_rules(conn, habit_key),
+        "success_patterns": _extract_success_patterns(conn, habit_key),
+        "common_mistakes": _extract_common_mistakes(conn, habit_key),
     }
     conn = get_conn()
     conn.execute(
@@ -73,8 +77,107 @@ def check_and_save_template(task_text: str, steps: list[dict]) -> dict[str, Any]
     )
     conn.commit()
     conn.close()
-    logger.info("固化模板: %s (频次 %d, 均分 %.1f)", habit_key, habit["freq_count"], avg_score)
+    logger.info("固化模板: %s (频次 %d, 均分 %.1f, %d 条规则)",
+                habit_key, habit["freq_count"], avg_score, len(flow["decision_rules"]))
     return {"name": habit_key, "freq": habit["freq_count"], "avg_score": round(avg_score, 1)}
+
+
+def _extract_decision_rules(conn, habit_key: str) -> list[dict]:
+    """从高分历史任务中提取决策规则（程序性记忆）。
+
+    分析高分任务的关键决策，提炼为可复用的规则。
+    """
+    try:
+        keyword = f"%{habit_key}%"
+        rows = conn.execute(
+            """SELECT key_decisions FROM task_list
+               WHERE (task_content LIKE ? OR tags LIKE ?)
+                 AND work_score > 70
+                 AND key_decisions IS NOT NULL AND key_decisions != '[]'
+               ORDER BY work_score DESC LIMIT 10""",
+            (keyword, keyword),
+        ).fetchall()
+
+        rules = []
+        seen_decisions = set()
+        for row in rows:
+            try:
+                decisions = json.loads(row["key_decisions"]) if row["key_decisions"] else []
+                for d in decisions:
+                    decision_text = d.get("decision", "")
+                    if decision_text and decision_text not in seen_decisions:
+                        seen_decisions.add(decision_text)
+                        rules.append({
+                            "when": d.get("step", "执行时"),
+                            "then": decision_text,
+                        })
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        return rules[:5]  # 最多保留 5 条规则
+    except Exception:
+        return []
+
+
+def _extract_success_patterns(conn, habit_key: str) -> list[str]:
+    """从高分任务中提取成功模式（程序性记忆）。"""
+    try:
+        keyword = f"%{habit_key}%"
+        rows = conn.execute(
+            """SELECT task_steps FROM task_list
+               WHERE (task_content LIKE ? OR tags LIKE ?)
+                 AND work_score > 80
+                 AND task_steps IS NOT NULL AND task_steps != '[]'
+               ORDER BY work_score DESC LIMIT 5""",
+            (keyword, keyword),
+        ).fetchall()
+
+        # 统计高频步骤模式
+        step_sequences = []
+        for row in rows:
+            try:
+                steps = json.loads(row["task_steps"]) if row["task_steps"] else []
+                names = [s.get("name", "") for s in steps if s.get("name")]
+                if len(names) >= 2:
+                    step_sequences.append(" → ".join(names))
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        # 返回最常见的模式（去重）
+        from collections import Counter
+        counter = Counter(step_sequences)
+        return [seq for seq, _ in counter.most_common(3)]
+    except Exception:
+        return []
+
+
+def _extract_common_mistakes(conn, habit_key: str) -> list[str]:
+    """从低分任务中提取常见错误（程序性记忆）。"""
+    try:
+        keyword = f"%{habit_key}%"
+        rows = conn.execute(
+            """SELECT task_steps FROM task_list
+               WHERE (task_content LIKE ? OR tags LIKE ?)
+                 AND work_score > 0 AND work_score < 50
+                 AND task_steps IS NOT NULL AND task_steps != '[]'
+               ORDER BY work_score ASC LIMIT 5""",
+            (keyword, keyword),
+        ).fetchall()
+
+        mistakes = []
+        for row in rows:
+            try:
+                steps = json.loads(row["task_steps"]) if row["task_steps"] else []
+                for s in steps:
+                    if s.get("status") == "failed":
+                        mistakes.append(f"步骤「{s.get('name', '?')}」易失败")
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        # 去重
+        return list(set(mistakes))[:3]
+    except Exception:
+        return []
 
 
 def _calc_habit_avg_score(conn, habit_key: str) -> float:
@@ -120,6 +223,11 @@ def list_templates() -> list[dict[str, Any]]:
             "name": r["name"],
             "steps": flow.get("steps", []),
             "freq": flow.get("freq_count", 0),
+            "avg_score": flow.get("avg_score", 0),
+            # ── 程序性记忆字段 ──
+            "decision_rules": flow.get("decision_rules", []),
+            "success_patterns": flow.get("success_patterns", []),
+            "common_mistakes": flow.get("common_mistakes", []),
             "create_time": r["create_time"],
         })
     return result

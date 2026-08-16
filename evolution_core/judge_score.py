@@ -22,21 +22,61 @@ from evolution_core.safe_ops import (
 
 logger = logging.getLogger(__name__)
 
-# 维度权重（按任务类型差异化）
-_DIMENSION_WEIGHTS = {
-    "work": {
-        "completeness": 0.25, "efficiency": 0.20, "quality": 0.25,
-        "consistency": 0.15, "satisfaction": 0.10, "novelty": 0.05,
-    },
-    "life": {
-        "completeness": 0.20, "efficiency": 0.15, "quality": 0.20,
-        "consistency": 0.15, "satisfaction": 0.20, "novelty": 0.10,
-    },
-    "mix": {
-        "completeness": 0.25, "efficiency": 0.20, "quality": 0.20,
-        "consistency": 0.15, "satisfaction": 0.15, "novelty": 0.05,
-    },
-}
+# 维度权重（从配置文件加载，带默认值）
+def _get_dimension_weights() -> dict[str, dict[str, float]]:
+    """获取打分维度权重（优先配置文件）。"""
+    try:
+        from config.prompt_manager import get_score_weights
+        weights = {}
+        for task_type in ["work", "life", "mix"]:
+            w = get_score_weights(task_type)
+            if w:
+                weights[task_type] = w
+        if weights:
+            return weights
+    except Exception:
+        pass
+    # 默认权重
+    return {
+        "work": {"completeness": 0.25, "efficiency": 0.20, "quality": 0.25, "consistency": 0.15, "satisfaction": 0.10, "novelty": 0.05},
+        "life": {"completeness": 0.20, "efficiency": 0.15, "quality": 0.20, "consistency": 0.15, "satisfaction": 0.20, "novelty": 0.10},
+        "mix": {"completeness": 0.25, "efficiency": 0.20, "quality": 0.20, "consistency": 0.15, "satisfaction": 0.15, "novelty": 0.05},
+    }
+
+
+# ── 打分 prompt（配置化） ──
+def _get_score_prompt() -> str:
+    """获取打分 prompt（优先配置文件，降级默认）。"""
+    try:
+        from config.prompt_manager import get_prompt
+        prompt = get_prompt("score_system_prompt")
+        if prompt:
+            return prompt
+    except Exception:
+        pass
+    return """你是一个任务质量评估专家。根据任务执行结果，从 6 个维度打分（每项 0-100）：
+返回严格 JSON：{"completeness": 0-100, "efficiency": 0-100, "quality": 0-100, "consistency": 0-100, "satisfaction": 0-100, "novelty": 0-100, "overall": 0-100, "reason": "评价", "suggestion": "建议"}"""
+
+
+_SCORE_PROMPT_CACHE = None
+
+
+def _get_score_prompt_cached() -> str:
+    """获取打分 prompt（缓存）。"""
+    global _SCORE_PROMPT_CACHE
+    if _SCORE_PROMPT_CACHE is None:
+        _SCORE_PROMPT_CACHE = _get_score_prompt()
+    return _SCORE_PROMPT_CACHE
+
+
+_DIMENSION_WEIGHTS = None
+
+
+def _get_weights() -> dict[str, dict[str, float]]:
+    global _DIMENSION_WEIGHTS
+    if _DIMENSION_WEIGHTS is None:
+        _DIMENSION_WEIGHTS = _get_dimension_weights()
+    return _DIMENSION_WEIGHTS
 
 _SCORE_SYSTEM_PROMPT = """你是一个任务质量评估专家。根据任务执行结果，从 6 个维度打分（每项 0-100）：
 
@@ -199,7 +239,7 @@ def _llm_score(result: dict[str, Any], task_type: str) -> dict[str, Any] | None:
             summary += f"日志: {'; '.join(str(l) for l in logs[-3:])}"
 
         resp = safe_llm_json([
-            {"role": "system", "content": _SCORE_SYSTEM_PROMPT},
+            {"role": "system", "content": _get_score_prompt_cached()},
             {"role": "user", "content": summary},
         ], max_tokens=512, default=None)
 
@@ -211,7 +251,7 @@ def _llm_score(result: dict[str, Any], task_type: str) -> dict[str, Any] | None:
                 if dim not in resp:
                     resp[dim] = 60
 
-            weights = _DIMENSION_WEIGHTS.get(task_type, _DIMENSION_WEIGHTS["work"])
+            weights = _get_weights().get(task_type, _DIMENSION_WEIGHTS["work"])
             weighted_total = sum(clamp_value(resp.get(dim, 60), 0, 100) * w for dim, w in weights.items())
             resp["overall"] = round(weighted_total, 1)
             resp["dimensions"] = {dim: clamp_value(resp.get(dim, 60), 0, 100) for dim in weights}
@@ -303,7 +343,7 @@ def _rule_score(result: dict[str, Any], task_type: str) -> dict[str, Any]:
         "novelty": novelty,
     }
 
-    weights = _DIMENSION_WEIGHTS.get(task_type, _DIMENSION_WEIGHTS["work"])
+    weights = _get_weights().get(task_type, _DIMENSION_WEIGHTS["work"])
     overall = sum(scores[dim] * w for dim, w in weights.items())
 
     scores["overall"] = round(overall, 1)

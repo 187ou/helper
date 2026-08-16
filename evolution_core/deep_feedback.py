@@ -19,28 +19,29 @@ from evolution_core.safe_ops import safe_llm_json, safe_json_loads, sanitize_tex
 
 logger = logging.getLogger(__name__)
 
-# LLM 分析提示词
-_ANALYZE_MODIFY_PROMPT = """你是一个用户行为分析专家。用户修改了 AI 的输出，请分析修改意图。
+# LLM 分析提示词（从配置文件加载）
+def _get_feedback_prompt() -> str:
+    """获取反馈分析 prompt（优先配置文件，降级默认）。"""
+    try:
+        from config.prompt_manager import get_prompt
+        prompt = get_prompt("feedback_analyze_prompt")
+        if prompt:
+            return prompt
+    except Exception:
+        pass
+    return """你是一个用户行为分析专家。用户修改了 AI 的输出，请分析修改意图。
+返回严格 JSON：{"modify_type": "style|structure|content|tone|format|other", "intent": "意图", "preference_rule": {"key": "键", "value": "值", "evidence": "证据"}, "confidence": 0-1}"""
 
-## 分析维度
-1. **修改类型**：style（文风）/ structure（结构）/ content（内容）/ tone（语气）/ format（格式）/ other（其他）
-2. **修改意图**：用户想通过修改达到什么目的（一句话）
-3. **偏好规则**：从修改中提炼的通用偏好规则
-4. **置信度**：你对分析的确定程度（0-1）
 
-## 输出格式
-严格返回 JSON，不要 markdown：
-{
-  "modify_type": "style|structure|content|tone|format|other",
-  "intent": "用户修改意图（一句话）",
-  "preference_rule": {
-    "key": "偏好键（如 style:prefer）",
-    "value": "偏好值（如 简洁）",
-    "evidence": "证据描述"
-  },
-  "confidence": 0-1,
-  "details": "详细分析"
-}"""
+_FEEDBACK_PROMPT_CACHE = None
+
+
+def _get_feedback_prompt_cached() -> str:
+    """获取反馈分析 prompt（缓存）。"""
+    global _FEEDBACK_PROMPT_CACHE
+    if _FEEDBACK_PROMPT_CACHE is None:
+        _FEEDBACK_PROMPT_CACHE = _get_feedback_prompt()
+    return _FEEDBACK_PROMPT_CACHE
 
 
 def analyze_modification_deep(
@@ -81,7 +82,7 @@ def _analyze_with_llm(original: str, modified: str, task_type: str) -> dict[str,
     context += f"## 原文\n{original_short}\n\n## 修改后\n{modified_short}"
 
     resp = safe_llm_json([
-        {"role": "system", "content": _ANALYZE_MODIFY_PROMPT},
+        {"role": "system", "content": _get_feedback_prompt_cached()},
         {"role": "user", "content": context},
     ], max_tokens=512, default=None)
 

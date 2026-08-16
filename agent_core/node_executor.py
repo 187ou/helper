@@ -6,16 +6,31 @@ from typing import Callable, Optional
 from agent_core.task_parser import TaskStep
 from agent_core.llm_client import chat, chat_stream
 from agent_core.result_validator import validate_and_retry
+from agent_core.context_window import DEFAULT_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
-_EXECUTE_SYSTEM_PROMPT = """你是一个任务执行助手。你会收到一个任务步骤的描述和上下文，需要执行该步骤并返回结果。
+def _get_execute_prompt() -> str:
+    """获取执行 prompt（优先配置文件，降级默认）。"""
+    try:
+        from config.prompt_manager import get_prompt
+        prompt = get_prompt("execute_system_prompt")
+        if prompt:
+            return prompt
+    except Exception:
+        pass
+    return "你是一个任务执行助手。你会收到一个任务步骤的描述和上下文，需要执行该步骤并返回结果。输出要具体、可操作。"
 
-规则：
-1. 根据步骤描述完成具体任务（生成文本、分析数据、整理信息等）
-2. 如果步骤需要数据但上下文中没有，明确说明需要什么数据
-3. 输出要具体、可操作，不要空泛
-4. 保持简洁，重点突出"""
+
+# 向后兼容
+_get_execute_prompt_static() = None
+
+
+def _get_execute_prompt_static() -> str:
+    global _get_execute_prompt_static()
+    if _get_execute_prompt_static() is None:
+        _get_execute_prompt_static() = _get_execute_prompt()
+    return _get_execute_prompt_static()
 
 # ── 重试配置 ──
 MAX_EXEC_RETRIES = 2       # 执行失败最大重试次数
@@ -55,7 +70,7 @@ def execute_node(step: TaskStep, state: dict,
             # 流式收集完整响应
             result_parts = []
             for token in chat_stream([
-                {"role": "system", "content": _EXECUTE_SYSTEM_PROMPT},
+                {"role": "system", "content": _get_execute_prompt_static()},
                 {"role": "user", "content": context},
             ], temperature=0.5):
                 result_parts.append(token)
@@ -103,27 +118,32 @@ def execute_node(step: TaskStep, state: dict,
 
 
 def _build_context(step: TaskStep, state: dict) -> str:
-    """构建节点执行的上下文（记忆增强）。"""
-    parts = [f"## 当前步骤\n名称: {step.name}\n描述: {step.description}"]
-
-    # 添加已完成步骤的结果
-    prev_results = state.get("step_results", [])
-    if prev_results:
-        parts.append("\n## 前序步骤结果")
-        for r in prev_results[-3:]:  # 最多引用最近 3 步
-            parts.append(f"- [{r['name']}] {r['result'][:200]}")
-
-    # 添加用户原始指令
+    """构建节点执行的上下文（记忆增强 + 窗口管理）。"""
     task_text = state.get("task_text", "")
-    if task_text:
-        parts.append(f"\n## 用户原始指令\n{task_text}")
+    prev_results = state.get("step_results", [])
 
-    # 添加记忆增强上下文（偏好 + 知识）
+    # 构建记忆增强上下文
     memory = _build_memory_for_step(step, task_text)
-    if memory:
-        parts.append(f"\n{memory}")
 
-    return "\n".join(parts)
+    # 格式化前序步骤结果
+    prior_texts = []
+    for r in prev_results[-3:]:  # 最多引用最近 3 步
+        prior_texts.append(f"[{r['name']}] {r['result'][:200]}")
+
+    # 使用上下文窗口管理构建最终 prompt
+    from agent_core.context_window import build_context_with_window
+
+    system_prompt = _get_execute_prompt_static()
+    user_query = f"## 当前步骤\n名称: {step.name}\n描述: {step.description}"
+
+    return build_context_with_window(
+        system_prompt=system_prompt,
+        user_query=user_query,
+        memory_context=memory,
+        prior_results=prior_texts,
+        original_instruction=task_text,
+        max_tokens=DEFAULT_MAX_TOKENS,
+    )
 
 
 def _build_memory_for_step(step: TaskStep, task_text: str) -> str:

@@ -17,11 +17,61 @@ _bm25 = None
 _doc_list: list[dict[str, Any]] | None = None  # 与 BM25 索引对应的文档列表
 _index_lock = threading.Lock()  # 保护索引的线程安全
 
+# ── 查询同义词扩展表（轻量级，覆盖常见办公/生活场景） ──
+_QUERY_SYNONYMS: dict[str, list[str]] = {
+    # 财务相关
+    "报销": ["发票", "票据", "费用", "报账"],
+    "发票": ["报销", "票据", "凭证"],
+    "记账": ["收支", "账单", "消费", "开销"],
+    # 工作相关
+    "周报": ["周总结", "本周工作", "weekly"],
+    "月报": ["月总结", "本月工作", "monthly"],
+    "会议纪要": ["会议记录", "会议总结", "meeting"],
+    "文书": ["报告", "总结", "方案", "公文"],
+    # 生活相关
+    "日程": ["计划", "排班", "出行", "schedule"],
+    "归档": ["整理", "归类", "收纳", "分类"],
+    "习惯": ["打卡", "日常", "habit"],
+    # 知识库
+    "合同": ["协议", "签约", "contract"],
+    "项目": ["project", "工程", "进度"],
+}
+
 
 def _tokenize(text: str) -> list[str]:
     """简单分词：按非字母数字中文切分。"""
     import re
     return [t.lower() for t in re.findall(r'[一-鿿]+|[a-z0-9]+', text) if len(t) > 1]
+
+
+def _expand_query(query: str) -> str:
+    """查询扩展：为查询词添加同义词，提高召回率。
+
+    例如："报销" → "报销 发票 票据 费用"
+    """
+    expanded = [query]
+    query_lower = query.lower().strip()
+
+    # 精确匹配
+    if query_lower in _QUERY_SYNONYMS:
+        expanded.extend(_QUERY_SYNONYMS[query_lower])
+
+    # 部分匹配（查询词包含某个关键词）
+    for key, synonyms in _QUERY_SYNONYMS.items():
+        if key in query_lower and key != query_lower:
+            expanded.extend(synonyms)
+            expanded.append(key)
+
+    # 去重并保持顺序
+    seen: set[str] = set()
+    unique: list[str] = []
+    for term in expanded:
+        t = term.lower()
+        if t not in seen:
+            seen.add(t)
+            unique.append(term)
+
+    return " ".join(unique)
 
 
 def build_index():
@@ -212,7 +262,7 @@ def ensure_index():
 
 
 def search_bm25(query: str, top_k: int = 5) -> list[dict[str, Any]]:
-    """BM25 全文检索（线程安全）。"""
+    """BM25 全文检索（线程安全，支持同义词扩展）。"""
     import numpy as np
 
     with _index_lock:
@@ -220,7 +270,9 @@ def search_bm25(query: str, top_k: int = 5) -> list[dict[str, Any]]:
         if _bm25 is None or not _doc_list:
             return []
 
-        tokens = _tokenize(query)
+        # 查询扩展：为查询词添加同义词，提高召回率
+        expanded_query = _expand_query(query)
+        tokens = _tokenize(expanded_query)
         if not tokens:
             return []
 
@@ -265,19 +317,33 @@ def hybrid_search(query: str, category: str = "", top_k: int = 5, alpha: float =
 
 def _reciprocal_rank_fusion(vec_results: list[dict], bm25_results: list[dict],
                             top_k: int, alpha: float, k: int = 60) -> list[dict]:
-    """RRF（Reciprocal Rank Fusion）融合多路结果。"""
+    """RRF（Reciprocal Rank Fusion）融合多路结果。
+
+    去重 key 使用 file_path + chunk_index，避免不同文档同开头文本被错误去重。
+    """
     scores: dict[str, float] = {}
     texts: dict[str, dict] = {}
 
+    def _make_key(r: dict) -> str:
+        """生成去重 key：优先用 file_path + chunk_index，降级用文本 hash。"""
+        fp = r.get("file_path", "")
+        ci = r.get("chunk_index", r.get("chunk_idx", -1))
+        if fp and ci >= 0:
+            return f"{fp}::{ci}"
+        # 降级：用文本前 200 字符 hash
+        text = r.get("text", "")
+        import hashlib
+        return hashlib.md5(text[:200].encode()).hexdigest()
+
     # 向量结果排名
     for rank, r in enumerate(vec_results):
-        key = r.get("text", "")[:100]  # 用文本前缀做去重 key
+        key = _make_key(r)
         scores[key] = scores.get(key, 0) + alpha * (1.0 / (k + rank + 1))
         texts[key] = r
 
     # BM25 结果排名
     for rank, r in enumerate(bm25_results):
-        key = r.get("text", "")[:100]
+        key = _make_key(r)
         scores[key] = scores.get(key, 0) + (1 - alpha) * (1.0 / (k + rank + 1))
         if key not in texts:
             texts[key] = r

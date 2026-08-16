@@ -180,13 +180,16 @@ def run_stream(task_text: str, task_id: int | None = None,
     set_task_id(task_id)
     is_resume = resume_from is not None
 
-    # 1. 拆解
-    steps = parse(task_text)
+    # 1. 拆解（带来源信息）
+    steps, source_info = parse_with_source(task_text)
     yield {
         "type": "steps",
         "data": {
             "task_id": task_id,
             "is_resume": is_resume,
+            "source": source_info.get("source", "llm"),
+            "source_label": source_info.get("source_label", "AI 智能拆解"),
+            "template_name": source_info.get("template_name", ""),
             "steps": [{"index": s.index, "name": s.name, "desc": s.description, "type": s.step_type} for s in steps],
         },
     }
@@ -203,14 +206,12 @@ def run_stream(task_text: str, task_id: int | None = None,
             if existing_dag:
                 for node in existing_dag.get("nodes", []):
                     node_states[node["id"]] = node.get("status", "pending")
-                # 恢复已完成的结果
-                for node in existing_dag.get("nodes", []):
-                    if node.get("status") == "success":
-                        # 从持久化的 task_steps 恢复结果
-                        pass
-            logger.info("断点续跑: 任务 #%d，从步骤 %d 继续，已有 %d 步完成",
-                        task_id, resume_from, sum(1 for v in node_states.values() if v == "success"))
-            yield {"type": "log", "data": {"message": f"🔄 断点续跑：从步骤 {resume_from + 1} 继续"}}
+
+                # 恢复已完成步骤的结果到 step_results（关键修复）
+                restored_count = _restore_completed_results(existing_task, existing_dag, step_results)
+                logger.info("断点续跑: 任务 #%d，从步骤 %d 继续，恢复 %d 步结果",
+                            task_id, resume_from, restored_count)
+                yield {"type": "log", "data": {"message": f"断点续跑：从步骤 {resume_from + 1} 继续（已恢复 {restored_count} 步结果）"}}
         except Exception as e:
             logger.warning("恢复状态失败，从头执行: %s", e)
             is_resume = False
@@ -258,7 +259,16 @@ def run_stream(task_text: str, task_id: int | None = None,
 
     except Exception as e:
         logger.exception("流式任务异常: %s", e)
-        yield {"type": "log", "data": {"message": f"执行异常: {e}"}}
+        # 结构化异常事件：前端可据此显示错误类型和建议
+        yield {
+            "type": "error",
+            "data": {
+                "message": str(e)[:300],
+                "error_type": type(e).__name__,
+                "step_index": step.index if 'step' in dir() else -1,
+                "suggestion": _get_error_suggestion(e),
+            },
+        }
 
     cost_time = time.time() - start
 
@@ -322,6 +332,80 @@ def run_stream(task_text: str, task_id: int | None = None,
         logger.warning("持久化任务失败: %s", e)
 
 
+def _restore_completed_results(existing_task: dict | None, existing_dag: dict | None,
+                                step_results: list[dict]) -> int:
+    """从持久化的任务和 DAG 中恢复已完成步骤的结果。
+
+    Args:
+        existing_task: 数据库中的任务记录
+        existing_dag: DAG 数据（含节点状态）
+        step_results: 当前步骤结果列表（会被修改）
+
+    Returns:
+        恢复的步骤数量
+    """
+    if not existing_task or not existing_dag:
+        return 0
+
+    restored = 0
+    try:
+        # 从 task_steps 获取步骤定义
+        task_steps_raw = existing_task.get("task_steps", "[]")
+        if isinstance(task_steps_raw, str):
+            import json
+            task_steps = json.loads(task_steps_raw) if task_steps_raw else []
+        else:
+            task_steps = task_steps_raw or []
+
+        # 从 DAG 获取节点状态
+        nodes = existing_dag.get("nodes", [])
+        completed_node_ids = {
+            n["id"] for n in nodes
+            if n.get("status") == "success"
+        }
+
+        # 恢复已完成步骤的结果
+        for step_def in task_steps:
+            step_index = step_def.get("index", -1)
+            node_id = f"step_{step_index}"
+            if node_id in completed_node_ids:
+                # 构造结果（使用步骤描述作为结果摘要）
+                result_text = step_def.get("description", step_def.get("desc", ""))
+                if result_text:
+                    step_results.append({
+                        "index": step_index,
+                        "name": step_def.get("name", f"步骤{step_index}"),
+                        "result": result_text[:500],  # 截断避免上下文过长
+                    })
+                    restored += 1
+    except Exception as e:
+        logger.debug("恢复已完成结果失败: %s", e)
+
+    return restored
+
+
+def _get_error_suggestion(error: Exception) -> str:
+    """根据异常类型返回用户友好的建议。"""
+    error_msg = str(error).lower()
+    error_type = type(error).__name__
+
+    if "timeout" in error_msg or "timed out" in error_msg:
+        return "请求超时，请检查网络连接或稍后重试"
+    if "connection" in error_msg or "connect" in error_msg:
+        return "网络连接失败，请检查网络设置"
+    if "api" in error_msg and ("key" in error_msg or "auth" in error_msg or "unauthorized" in error_msg):
+        return "API 密钥无效或已过期，请检查设置"
+    if "rate" in error_msg and "limit" in error_msg:
+        return "请求频率过高，请稍后重试"
+    if "json" in error_msg or "decode" in error_msg:
+        return "AI 返回格式异常，已自动重试"
+    if error_type == "JSONDecodeError":
+        return "AI 返回格式异常，已自动重试"
+    if "recursion" in error_msg or "maximum recursion" in error_msg:
+        return "任务复杂度超出限制，请简化任务"
+    return "执行出错，请重试或联系支持"
+
+
 def _execute_node_streaming(step, state) -> Generator[dict, dict, dict]:
     """执行单个节点，yield 每个 token，最后返回结果。
 
@@ -351,7 +435,18 @@ def _execute_node_streaming(step, state) -> Generator[dict, dict, dict]:
         try:
             if attempt > 0:
                 wait = RETRY_BACKOFF_BASE ** attempt
-                yield {"type": "log", "data": {"message": f"🔄 步骤 {step.index} 第 {attempt} 次重试（{wait:.1f}s 后）..."}}
+                # 结构化重试事件：前端可显示"第 N 次重试中..."进度
+                yield {
+                    "type": "retry",
+                    "data": {
+                        "index": step.index,
+                        "name": step.name,
+                        "attempt": attempt,
+                        "max_attempts": MAX_EXEC_RETRIES,
+                        "wait_seconds": round(wait, 1),
+                        "message": f"步骤 {step.name} 第 {attempt} 次重试（{wait:.1f}s 后）",
+                    },
+                }
                 import time as _time
                 _time.sleep(wait)
                 token_buffer.clear()

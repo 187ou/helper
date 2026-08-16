@@ -139,7 +139,9 @@ def learn_from_task(task_text: str, steps: list[dict], score: float, duration: f
         return
 
     keywords = _extract_keywords(task_text)
-    pattern_key = _generate_pattern_key(step_names, keywords)
+    # 提取步骤类型序列，用于生成稳定的 pattern_key
+    step_types = [s.get("step_type", s.get("type", "action")) for s in steps]
+    pattern_key = _generate_detailed_pattern_key(step_names, keywords, step_types)
 
     # 安全写入
     if not _safe_learn(pattern_key, keywords, step_names, score, duration, success):
@@ -364,10 +366,25 @@ def _extract_keywords(text: str) -> list[str]:
 
 
 def _generate_pattern_key(step_names: list[str], keywords: list[str]) -> str:
-    """生成模式唯一标识。"""
-    name_hash = "_".join(step_names[:4])
+    """生成模式唯一标识（基于步骤类型序列 + 关键词，避免名称碎片化）。
+
+    之前用步骤名拼接（如 "周报:收集_梳理_汇总"），LLM 每次生成步骤名稍有不同就变成新模式。
+    现在用步骤类型序列（如 "action:action+parallel+action"）+ 关键词前缀，同类工作流归并。
+    """
     keyword_prefix = keywords[0] if keywords else "default"
-    return f"{keyword_prefix}:{name_hash}"
+    return f"{keyword_prefix}:{len(step_names)}steps"
+
+
+def _generate_detailed_pattern_key(step_names: list[str], keywords: list[str],
+                                    step_types: list[str] | None = None) -> str:
+    """生成带步骤类型的详细模式 key（用于区分同一关键词下的不同流程模式）。"""
+    keyword_prefix = keywords[0] if keywords else "default"
+    if step_types and len(step_types) == len(step_names):
+        # 用类型序列区分：如 "action+parallel+action"
+        type_seq = "+".join(t if t in ("action", "parallel") else "action" for t in step_types)
+        return f"{keyword_prefix}:{type_seq}"
+    # 降级：用步骤数
+    return f"{keyword_prefix}:{len(step_names)}steps"
 
 
 def _pattern_score(pattern: dict) -> float:

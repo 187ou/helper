@@ -21,9 +21,17 @@ def list_docs():
 
 @router.get("/search")
 def search_docs(q: str = "", top_k: int = 5):
+    """检索知识库（含引用溯源）。"""
     if not q:
         return []
-    return search(q, top_k=top_k)
+    results = search(q, top_k=top_k)
+    # 确保每个结果都有引用溯源字段
+    for r in results:
+        if "source_label" not in r:
+            r["source_label"] = f"第 {r.get('chunk_index', 0) + 1} 段"
+        if "highlight" not in r:
+            r["highlight"] = r.get("text", "")[:100]
+    return results
 
 
 @router.post("/upload")

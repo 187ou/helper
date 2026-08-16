@@ -7,7 +7,7 @@ from evolution_core.judge_score import (
     score_task,
     analyze_score_trend,
     _rule_score,
-    _DIMENSION_WEIGHTS,
+    _get_weights,
 )
 
 
@@ -91,15 +91,17 @@ class TestDimensionWeights:
 
     def test_weights_sum_to_one(self):
         """各类型权重之和应为 1。"""
-        for task_type, weights in _DIMENSION_WEIGHTS.items():
+        weights_dict = _get_weights()
+        for task_type, weights in weights_dict.items():
             total = sum(weights.values())
             assert abs(total - 1.0) < 0.01
 
     def test_all_types_have_weights(self):
         """所有任务类型应有权重。"""
-        assert "work" in _DIMENSION_WEIGHTS
-        assert "life" in _DIMENSION_WEIGHTS
-        assert "mix" in _DIMENSION_WEIGHTS
+        weights_dict = _get_weights()
+        assert "work" in weights_dict
+        assert "life" in weights_dict
+        assert "mix" in weights_dict
 
 
 class TestAnalyzeScoreTrend:

@@ -1,4 +1,4 @@
-"""定时任务调度器：周期性执行健康提醒、归档等。"""
+"""定时任务调度器：周期性执行健康提醒、归档、遗忘周期等。"""
 import logging
 import threading
 import time
@@ -8,6 +8,9 @@ import schedule
 from service.schedule_service import check_reminders, ack_reminder, daily_archive
 
 logger = logging.getLogger(__name__)
+
+# ── 遗忘周期配置 ──
+FORGETTING_INTERVAL_HOURS = 24  # 每 24 小时执行一次遗忘周期
 
 _thread = None
 _running = False
@@ -30,6 +33,9 @@ def start(main_window=None) -> None:
 
     # 每日晚 18:00 归档
     schedule.every().day.at("18:00").do(_evening_archive)
+
+    # 每日凌晨 02:00 执行遗忘周期（清理过期权重/偏好/模式）
+    schedule.every().day.at("02:00").do(_forgetting_cycle)
 
     _thread = threading.Thread(target=_run_loop, daemon=True)
     _thread.start()
@@ -72,3 +78,13 @@ def _evening_archive() -> None:
     """晚 6 点归档。"""
     result = daily_archive()
     logger.info("每日归档: %s", result)
+
+
+def _forgetting_cycle() -> None:
+    """遗忘周期：清理过期数据，防止演化引擎越来越"脏"。"""
+    try:
+        from evolution_core.forgetting import run_forgetting_cycle
+        result = run_forgetting_cycle()
+        logger.info("遗忘周期完成: %s", result)
+    except Exception as e:
+        logger.error("遗忘周期执行失败: %s", e)

@@ -24,23 +24,31 @@ class TaskStep:
     step_type: str = "action"  # action / decision / parallel
 
 
-# ── 系统提示词 ──
-_PARSE_SYSTEM_PROMPT = """你是一个任务拆解助手。用户会输入一条自然语言指令（可能混合工作和生活任务），你需要将其拆解为有序的执行步骤。
+# ── 系统提示词（从配置文件加载，带默认值） ──
+def _get_parse_prompt() -> str:
+    """获取拆解 prompt（优先配置文件，降级默认）。"""
+    try:
+        from config.prompt_manager import get_prompt
+        prompt = get_prompt("parse_system_prompt")
+        if prompt:
+            return prompt
+    except Exception:
+        pass
+    # 默认 prompt
+    return """你是一个任务拆解助手。用户会输入一条自然语言指令，你需要将其拆解为有序的执行步骤。
+返回严格 JSON：{"task_type": "work|life|mix", "steps": [{"name": "步骤名", "description": "描述", "step_type": "action|parallel"}]}"""
 
-规则：
-1. 将复杂任务拆分为 2-6 个具体可执行的步骤
-2. 步骤之间尽量并行（无依赖的标为 parallel），有依赖的标为 action
-3. 步骤名要简短（5-10 字），描述要具体
-4. 首个步骤通常是"理解需求/收集信息"，最后一个是"汇总输出"
-5. 返回严格 JSON 格式，不要 markdown
 
-输出 JSON 格式：
-{
-  "task_type": "work | life | mix",
-  "steps": [
-    {"name": "步骤名", "description": "具体描述", "step_type": "action|parallel"}
-  ]
-}"""
+# 向后兼容：模块级变量（首次访问时加载）
+_PARSE_SYSTEM_PROMPT = None
+
+
+def _get_parse_prompt_static() -> str:
+    """获取拆解 prompt（缓存）。"""
+    global _PARSE_SYSTEM_PROMPT
+    if _PARSE_SYSTEM_PROMPT is None:
+        _PARSE_SYSTEM_PROMPT = _get_parse_prompt()
+    return _PARSE_SYSTEM_PROMPT
 
 
 def parse(task_text: str) -> list[TaskStep]:
@@ -53,8 +61,29 @@ def parse(task_text: str) -> list[TaskStep]:
 
     演化反馈闭环：命中模板/模板直接执行 → 执行后 learn_from_task 强化模式 → 下次更易命中
     """
+    steps, _ = parse_with_source(task_text)
+    return steps
+
+
+def parse_with_source(task_text: str) -> tuple[list[TaskStep], dict[str, Any]]:
+    """拆解任务并返回来源信息（供前端展示）。
+
+    Returns:
+        (steps, source_info)
+        source_info 包含:
+        - source: "template" | "pattern" | "default" | "llm" | "rule" | "empty"
+        - source_label: 中文标签（如"您的习惯模板"、"AI 智能拆解"）
+        - template_name: 模板名称（命中模板时）
+        - confidence: 置信度（模式命中时）
+
+    前端可根据 source 显示不同提示：
+    - template: "正在使用您的习惯模板「周报」"
+    - pattern: "基于您的历史最优流程"
+    - default: "已加载最佳实践模板"
+    - llm: "AI 智能拆解"
+    """
     if not task_text or not task_text.strip():
-        return [TaskStep(0, "空任务", "用户未输入有效指令")]
+        return [TaskStep(0, "空任务", "用户未输入有效指令")], {"source": "empty", "source_label": "空任务"}
 
     # ── 优先级 1：演化引擎推荐（模板 > 模式 > 默认） ──
     recommended = _try_recommend_steps(task_text)
@@ -70,16 +99,43 @@ def parse(task_text: str) -> list[TaskStep]:
             for i, s in enumerate(raw_steps)
         ]
         logger.info("演化推荐命中 [%s]: %d 步 — %s", source, len(steps), task_text[:40])
-        return steps
+
+        # 构造来源信息
+        source_info = {
+            "source": source,
+            "source_label": _get_source_label(source),
+            "template_name": _extract_template_name(raw_steps, source),
+        }
+        return steps, source_info
 
     # ── 优先级 2：LLM 拆解 ──
     steps = _parse_with_llm(task_text)
     if steps:
-        return steps
+        return steps, {"source": "llm", "source_label": "AI 智能拆解"}
 
     # ── 优先级 3：规则兜底 ──
     logger.warning("LLM 拆解失败，使用规则兜底")
-    return _parse_with_rules(task_text)
+    return _parse_with_rules(task_text), {"source": "rule", "source_label": "规则兜底"}
+
+
+def _get_source_label(source: str) -> str:
+    """获取来源的中文标签。"""
+    labels = {
+        "template": "您的习惯模板",
+        "pattern": "历史最优流程",
+        "default": "最佳实践模板",
+        "llm": "AI 智能拆解",
+        "rule": "规则兜底",
+    }
+    return labels.get(source, "未知来源")
+
+
+def _extract_template_name(raw_steps: list[dict], source: str) -> str:
+    """从命中的模板提取名称（用于前端展示）。"""
+    if source == "template" and raw_steps:
+        # 模板通常以第一个步骤名或描述中的关键词标识
+        return raw_steps[0].get("name", "默认模板")[:20]
+    return ""
 
 
 def _try_recommend_steps(task_text: str) -> tuple[list[dict], str] | None:
@@ -97,7 +153,7 @@ def _try_recommend_steps(task_text: str) -> tuple[list[dict], str] | None:
         templates = list_templates()
         for tpl in templates:
             name = tpl.get("name", "")
-            if name and name in task_text:
+            if name and _is_valid_template_match(name, task_text):
                 tpl_steps = tpl.get("steps", [])
                 if tpl_steps:
                     logger.info("固化模板命中: %s", name)
@@ -110,7 +166,8 @@ def _try_recommend_steps(task_text: str) -> tuple[list[dict], str] | None:
         from evolution_core.pattern_miner import recommend_steps
         pattern_steps = recommend_steps(task_text, task_type)
         if pattern_steps:
-            return pattern_steps, "pattern"
+            # 标准化：pattern_miner 返回 list[str]，转为统一 list[dict]
+            return _normalize_steps(pattern_steps), "pattern"
     except Exception as e:
         logger.debug("模式推荐失败: %s", e)
 
@@ -119,11 +176,74 @@ def _try_recommend_steps(task_text: str) -> tuple[list[dict], str] | None:
         from evolution_core.cold_start import get_default_template
         default_steps = get_default_template(task_text)
         if default_steps:
-            return default_steps, "default"
+            return _normalize_steps(default_steps), "default"
     except Exception as e:
         logger.debug("默认模板匹配失败: %s", e)
 
     return None
+
+
+def _normalize_steps(raw_steps: list) -> list[dict]:
+    """标准化步骤格式：将 list[str] 或 list[dict] 统一为 list[dict]。
+
+    不同来源的步骤格式不同：
+    - pattern_miner: list[str]（步骤名）
+    - template_save: list[dict]（含 name/description/step_type）
+    - cold_start: list[dict]（含 name/description/step_type）
+    """
+    normalized = []
+    for s in raw_steps:
+        if isinstance(s, dict):
+            normalized.append(s)
+        elif isinstance(s, str):
+            normalized.append({
+                "name": s[:20],
+                "description": s,
+                "step_type": "action",
+            })
+    return normalized
+
+
+def _is_valid_template_match(template_name: str, task_text: str) -> bool:
+    """校验模板是否真正匹配任务文本（避免否定句误匹配 + 部分匹配）。
+
+    问题：
+    1. 子串匹配 "周报" in "我不想写周报" 会误命中（否定句）
+    2. 子串匹配 "周报" in "周报总结很重要" 会误命中（部分匹配）
+
+    解决：
+    1. 检查否定词前缀（"不想"、"别"、"不要"）
+    2. 要求模板名后不是中文字符（避免"周报"匹配"周报总结"）
+    """
+    if template_name not in task_text:
+        return False
+
+    # 否定词列表：模板名前面出现这些词表示否定意图
+    NEGATION_WORDS = ["不想", "别", "不要", "无需", "不用", "不需要", "no", "not", "don't", "never"]
+
+    # 找到模板名在任务文本中的位置
+    idx = task_text.find(template_name)
+    if idx < 0:
+        return False
+
+    # ── 1. 检查否定词（前 6 个字符内） ──
+    prefix = task_text[max(0, idx - 6):idx].lower()
+    for neg in NEGATION_WORDS:
+        if neg in prefix:
+            logger.debug("模板匹配跳过（否定意图）: %s in %s", template_name, task_text[:30])
+            return False
+
+    # ── 2. 检查模板名后面的字符（仅对 2 字模板做部分匹配保护） ──
+    # 注意：中文无空格分词，无法完美区分"报销材料"（两词）和"周报总结"（复合词）
+    # 务实方案：只保护 2 字模板，3 字以上容忍（长词本身区分度高）
+    end_idx = idx + len(template_name)
+    if end_idx < len(task_text) and len(template_name) <= 2:
+        next_char = task_text[end_idx]
+        if '一' <= next_char <= '鿿':
+            logger.debug("模板匹配跳过（2字模板部分匹配）: %s | next=%s", template_name, next_char)
+            return False
+
+    return True
 
 
 def _parse_with_llm(task_text: str) -> list[TaskStep] | None:
@@ -138,7 +258,7 @@ def _parse_with_llm(task_text: str) -> list[TaskStep] | None:
             user_message = f"{task_text}\n\n{memory_context}"
 
         resp = chat_json([
-            {"role": "system", "content": _PARSE_SYSTEM_PROMPT},
+            {"role": "system", "content": _get_parse_prompt_static()},
             {"role": "user", "content": user_message},
         ])
         if "steps" not in resp:

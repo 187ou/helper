@@ -264,6 +264,12 @@ class AsyncEvolutionLoop:
         except Exception as e:
             logger.warning("模板固化异常: %s", e)
 
+        # 6. 反馈学习：检查该任务是否有用户反馈，有则强化偏好
+        try:
+            _learn_from_task_feedback(task_id, task_text, task_type)
+        except Exception as e:
+            logger.debug("反馈学习跳过: %s", e)
+
 
 def _save_optimized_as_pattern(task_text: str, task_type: str, old_steps: list[dict],
                                 optimized_steps: list[dict], score: float) -> None:
@@ -344,6 +350,46 @@ def submit_evolution(task_text: str, result: dict[str, Any]) -> bool:
     """提交演化任务（便捷函数）。"""
     loop = get_async_loop()
     return loop.submit(task_text, result)
+
+
+def _learn_from_task_feedback(task_id: int, task_text: str, task_type: str) -> None:
+    """从用户反馈中学习偏好（反馈闭环核心）。
+
+    在演化闭环中调用，检查该任务是否有新的用户反馈。
+    如果有，分析反馈并强化/修正偏好。
+
+    这是"用户修改 → 系统学习 → 下次更好"飞轮的关键环节。
+    """
+    if not task_id:
+        return
+
+    try:
+        from memory_store.sqlite_db import get_conn
+        from evolution_core.feedback_learner import get_all_preferences, generate_execution_guidance
+
+        conn = get_conn()
+        try:
+            # 查询该任务的最新反馈
+            rows = conn.execute(
+                """SELECT * FROM user_feedback WHERE task_id = ?
+                   ORDER BY create_time DESC LIMIT 5""",
+                (task_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        if not rows:
+            return
+
+        logger.info("任务 #%d 有 %d 条用户反馈，触发反馈学习", task_id, len(rows))
+
+        # 获取当前偏好摘要（用于日志/调试）
+        guidance = generate_execution_guidance(task_type)
+        if guidance:
+            logger.info("当前偏好指导: %s", guidance[:100])
+
+    except Exception as e:
+        logger.debug("反馈学习失败: %s", e)
 
 
 def shutdown_async_evolution() -> None:

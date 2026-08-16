@@ -11,6 +11,7 @@
 - 默认模板基于最佳实践，而非随机
 - 快速学习在 3-5 次任务后就能产生个性化
 """
+import json
 import logging
 from datetime import datetime
 from typing import Any
@@ -292,8 +293,14 @@ def get_recommended_steps(task_text: str, task_type: str = "") -> tuple[list[dic
 
 
 def get_all_default_templates() -> dict[str, dict]:
-    """获取所有默认模板（供前端展示）。"""
-    return dict(DEFAULT_TEMPLATES)
+    """获取所有默认模板（包括自动生成的历史模板）。"""
+    # 合并硬编码模板 + 自动生成的历史高频模板
+    merged = dict(DEFAULT_TEMPLATES)
+    history_templates = _get_history_based_templates()
+    for name, tpl in history_templates.items():
+        if name not in merged:  # 历史模板不覆盖硬编码
+            merged[name] = tpl
+    return merged
 
 
 def add_default_template(name: str, keywords: list[str], steps: list[dict], priority: int = 5) -> None:
@@ -308,3 +315,79 @@ def add_default_template(name: str, keywords: list[str], steps: list[dict], prio
         "priority": priority,
     }
     logger.info("添加默认模板: %s", name)
+
+
+def _get_history_based_templates() -> dict[str, dict]:
+    """从用户历史高频任务自动生成模板（冷启动扩展）。
+
+    分析历史任务中出现频次 >= 3 的相似任务组，
+    提取其步骤模式作为默认模板。
+    """
+    try:
+        from memory_store.sqlite_db import get_conn
+        from evolution_core.weight_evolve import _HABIT_PATTERNS
+
+        conn = get_conn()
+        templates = {}
+
+        # 遍历已知习惯模式，从历史任务中提取步骤模板
+        for habit_type, patterns in _HABIT_PATTERNS.items():
+            for habit_key, keywords in patterns.items():
+                # 查询该习惯的历史任务
+                conditions = " OR ".join(["task_content LIKE ?"] * len(keywords))
+                params = [f"%{kw}%" for kw in keywords]
+                rows = conn.execute(
+                    f"""SELECT task_steps FROM task_list
+                        WHERE ({conditions})
+                          AND task_steps IS NOT NULL AND task_steps != '[]'
+                          AND status IN ('done', 'success')
+                        ORDER BY work_score DESC, life_score DESC
+                        LIMIT 5""",
+                    params,
+                ).fetchall()
+
+                if len(rows) < 3:  # 至少需要 3 次历史记录
+                    continue
+
+                # 提取最常见的步骤模式（取步骤数最接近中位数的）
+                step_patterns = []
+                for row in rows:
+                    try:
+                        steps = json.loads(row["task_steps"]) if row["task_steps"] else []
+                        if steps and len(steps) >= 2:
+                            step_patterns.append(steps)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+                if len(step_patterns) < 3:
+                    continue
+
+                # 取步骤数中位数的模式作为模板
+                step_patterns.sort(key=len)
+                median_idx = len(step_patterns) // 2
+                best_steps = step_patterns[median_idx]
+
+                # 标准化步骤格式
+                normalized = []
+                for i, s in enumerate(best_steps):
+                    normalized.append({
+                        "name": s.get("name", s.get("desc", f"步骤{i}"))[:20],
+                        "description": s.get("description", s.get("desc", ""))[:100],
+                        "step_type": s.get("step_type", s.get("type", "action")),
+                    })
+
+                templates[habit_key] = {
+                    "keywords": keywords[:3],  # 取前 3 个关键词
+                    "steps": normalized,
+                    "template_type": "auto",
+                    "priority": 2,  # 自动生成的优先级低于硬编码
+                }
+
+        conn.close()
+        if templates:
+            logger.info("自动生成 %d 个历史模板: %s", len(templates), list(templates.keys()))
+        return templates
+
+    except Exception as e:
+        logger.debug("历史模板生成失败: %s", e)
+        return {}

@@ -1,4 +1,4 @@
-"""对话 API（含流式 SSE）。"""
+"""对话 API（含流式 SSE + 反馈）。"""
 import json
 import logging
 from fastapi import APIRouter
@@ -49,6 +49,9 @@ def stream_message(body: dict):
     def event_stream():
         try:
             for event in run_stream(text):
+                # 为 steps 事件附加反馈 URL（前端可据此展示反馈按钮）
+                if event.get("type") == "steps":
+                    event["data"]["feedback_url"] = "/api/feedback/submit"
                 yield f"event: {event['type']}\ndata: {json.dumps(event.get('data', {}), ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"event: error\ndata: {json.dumps({'message': str(e)[:200]}, ensure_ascii=False)}\n\n"

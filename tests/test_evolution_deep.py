@@ -41,7 +41,7 @@ from evolution_core.judge_score import (
     score_task,
     analyze_score_trend,
     _rule_score,
-    _DIMENSION_WEIGHTS,
+    _get_weights,
 )
 from evolution_core.weight_evolve import (
     evolve_from_task,
@@ -62,10 +62,21 @@ class TestPatternMiner:
         assert isinstance(keywords, list)
 
     def test_generate_pattern_key(self):
-        """应生成唯一模式标识。"""
+        """应生成唯一模式标识（基于步骤数，避免名称碎片化）。"""
         key = _generate_pattern_key(["收集数据", "分析数据", "生成报告"], ["周报"])
         assert "周报" in key
-        assert "收集数据" in key
+        # key 基于步骤数而非步骤名，避免 LLM 生成名称不同导致碎片化
+        assert "3steps" in key
+
+    def test_generate_detailed_pattern_key(self):
+        """详细模式 key 应包含步骤类型序列。"""
+        from evolution_core.pattern_miner import _generate_detailed_pattern_key
+        key = _generate_detailed_pattern_key(
+            ["收集数据", "分析数据", "生成报告"], ["周报"],
+            ["action", "parallel", "action"]
+        )
+        assert "周报" in key
+        assert "action+parallel+action" in key
 
     def test_pattern_score(self):
         """模式综合得分应正确计算。"""
@@ -179,7 +190,9 @@ class TestJudgeScore:
 
     def test_dimension_weights_sum_to_one(self):
         """权重之和应为 1。"""
-        for task_type, weights in _DIMENSION_WEIGHTS.items():
+        # 使用 _get_weights() 获取延迟加载的权重
+        weights_dict = _get_weights()
+        for task_type, weights in weights_dict.items():
             total = sum(weights.values())
             assert abs(total - 1.0) < 0.01
 

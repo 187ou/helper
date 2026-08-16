@@ -193,13 +193,16 @@ def add_document(file_path: str, text: str, category: str, file_name: str = "") 
 
 
 def search(query: str, category: str = "", top_k: int = 5, hybrid: bool = True) -> list[dict[str, Any]]:
-    """检索（支持混合检索）。
+    """检索（支持混合检索 + 引用溯源）。
 
     Args:
         query: 查询文本
         category: 分区 key，空则全库搜索
         top_k: 返回条数
         hybrid: 是否启用 BM25 + 向量混合检索
+
+    Returns:
+        结果列表，每项含 text/score/source/highlight 等字段
     """
     if not query.strip():
         return []
@@ -209,7 +212,9 @@ def search(query: str, category: str = "", top_k: int = 5, hybrid: bool = True) 
             from memory_store.bm25_index import hybrid_search
             from config.settings import get_kb_config
             kb_cfg = get_kb_config()
-            return hybrid_search(query, category=category, top_k=top_k, alpha=kb_cfg.get("hybrid_alpha", 0.5))
+            results = hybrid_search(query, category=category, top_k=top_k, alpha=kb_cfg.get("hybrid_alpha", 0.5))
+            # 为混合检索结果添加引用溯源
+            return _add_citations(results, query)
         except Exception as e:
             logger.warning("混合检索失败，回退到纯向量: %s", e)
 
@@ -245,7 +250,93 @@ def search(query: str, category: str = "", top_k: int = 5, hybrid: bool = True) 
             logger.warning("检索 %s 失败: %s", cat_key, e)
 
     results.sort(key=lambda x: x["score"], reverse=True)
-    return results[:top_k]
+    return _add_citations(results[:top_k], query)
+
+
+def _add_citations(results: list[dict], query: str) -> list[dict[str, Any]]:
+    """为检索结果添加引用溯源信息（来源 + 高亮片段）。
+
+    前端可据此展示：
+    - source_label: "来自《xxx.pdf》第 N 段"
+    - highlight: 匹配关键词的高亮文本
+    """
+    if not results or not query:
+        return results
+
+    # 提取查询关键词（用于高亮）
+    query_keywords = _extract_keywords(query)
+
+    for r in results:
+        # 来源信息
+        file_name = r.get("file_name", "")
+        chunk_idx = r.get("chunk_index", 0)
+        r["source_label"] = f"《{file_name}》第 {chunk_idx + 1} 段" if file_name else f"第 {chunk_idx + 1} 段"
+
+        # 高亮匹配片段
+        text = r.get("text", "")
+        r["highlight"] = _extract_relevant_snippet(text, query_keywords)
+
+    return results
+
+
+def _extract_keywords(query: str) -> list[str]:
+    """从查询中提取关键词（用于高亮）。"""
+    import re
+    # 提取中文词组（2-8 字）和英文单词
+    keywords = []
+
+    # 中文：按常见词长提取
+    for length in range(min(8, len(query)), 1, -1):
+        for i in range(len(query) - length + 1):
+            word = query[i:i + length]
+            if '一' <= word[0] <= '鿿':  # 以中文开头
+                keywords.append(word)
+
+    # 英文单词
+    keywords.extend(re.findall(r'[a-zA-Z]+', query))
+
+    # 去重保持顺序
+    seen = set()
+    unique = []
+    for kw in keywords:
+        if kw not in seen and len(kw) > 1:
+            seen.add(kw)
+            unique.append(kw)
+
+    return unique[:10]  # 最多 10 个关键词
+
+
+def _extract_relevant_snippet(text: str, keywords: list[str], snippet_len: int = 100) -> str:
+    """从文本中提取包含关键词的相关片段（用于高亮展示）。"""
+    if not text or not keywords:
+        return text[:snippet_len]
+
+    # 找到第一个关键词出现的位置
+    best_pos = -1
+    best_kw = ""
+    for kw in keywords:
+        pos = text.find(kw)
+        if pos >= 0 and (best_pos < 0 or pos < best_pos):
+            best_pos = pos
+            best_kw = kw
+
+    if best_pos < 0:
+        # 没找到关键词，返回开头
+        return text[:snippet_len]
+
+    # 从关键词位置前后扩展
+    start = max(0, best_pos - snippet_len // 4)
+    end = min(len(text), best_pos + len(best_kw) + snippet_len * 3 // 4)
+
+    snippet = text[start:end]
+
+    # 添加省略号
+    if start > 0:
+        snippet = "..." + snippet
+    if end < len(text):
+        snippet = snippet + "..."
+
+    return snippet
 
 
 def delete_document(file_path: str, category: str = "") -> int:

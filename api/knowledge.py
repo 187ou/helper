@@ -63,21 +63,45 @@ def stats():
 
 
 def _extract(fp: Path) -> str:
+    """提取文档文本（支持 PDF/Word/TXT/MD/CSV/Excel/图片 OCR）。"""
+    import os
     s = fp.suffix.lower()
+    text = ""
+
     try:
         if s == ".pdf":
             from tools.pdf_tools import extract_text
-            return extract_text(str(fp))
+            text = extract_text(str(fp))
+        elif s in (".doc", ".docx"):
+            from tools.docx_tools import extract_text
+            text = extract_text(str(fp))
         elif s in (".txt", ".md", ".csv"):
             for e in ["utf-8", "gbk"]:
                 try:
                     with open(fp, "r", encoding=e) as f:
-                        return f.read()
+                        text = f.read()
+                    break
                 except UnicodeDecodeError:
                     continue
-        elif s == ".xlsx":
+        elif s in (".xls", ".xlsx"):
             from tools.excel_tools import read_excel
-            return "\n".join("\t".join(str(c) for c in r) for r in read_excel(str(fp)))
-    except Exception:
+            text = "\n".join("\t".join(str(c) for c in r) for r in read_excel(str(fp)))
+        elif s in (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".webp"):
+            from tools.ocr_tools import extract_text as ocr_extract
+            text = ocr_extract(str(fp))
+    except Exception as e:
+        logger.warning("提取失败 %s: %s", fp, e)
+
+    # 文本降噪
+    if text.strip():
+        from memory_store.text_cleaner import clean_text
+        text = clean_text(text)
+
+    # 临时文件清理
+    try:
+        if fp.parent.name == "tmp":
+            os.remove(fp)
+    except OSError:
         pass
-    return ""
+
+    return text

@@ -148,8 +148,9 @@ def add_document(file_path: str, text: str, category: str, file_name: str = "") 
     if collection is None:
         return {"status": "error", "message": "Chroma 未就绪"}
 
-    # 切片
-    chunks = chunk_text(text)
+    # 文本降噪 + 切片
+    from memory_store.text_cleaner import clean_chunks
+    chunks = clean_chunks(chunk_text(text))
     if not chunks:
         return {"status": "empty", "chunks": 0}
 

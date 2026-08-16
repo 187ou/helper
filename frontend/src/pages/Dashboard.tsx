@@ -55,18 +55,24 @@ export default function Dashboard() {
   // 演化洞察
   const [evoReport, setEvoReport] = useState<any>(null)
   const [recommendedTpl, setRecommendedTpl] = useState<any>(null)
+  const [proactiveTip, setProactiveTip] = useState<string | null>(null)
+  const [emotionTrend, setEmotionTrend] = useState<any>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [statsRes, tasksRes, report] = await Promise.all([
+      const [statsRes, tasksRes, report, tip, emotion] = await Promise.all([
         api.getTaskStats(),
         api.getTasks('?limit=50'),
         api.getLatestReport('daily').catch(() => null),
+        api.getProactiveSuggestion().catch(() => null),
+        api.getEmotionTrend(7).catch(() => null),
       ])
       setStats(statsRes)
       setTasks(tasksRes)
       setEvoReport(report)
+      if (tip?.has_suggestion) setProactiveTip(tip.suggestion)
+      setEmotionTrend(emotion)
     } finally {
       setLoading(false)
     }
@@ -130,6 +136,42 @@ export default function Dashboard() {
           聚合工作 · 生活 · 健康全量待办，掌握每日事务全貌
         </p>
       </div>
+
+      {/* 智能感知栏（体现记忆系统） */}
+      {!loading && (proactiveTip || emotionTrend?.dominant_label) && (
+        <div className="flex gap-3">
+          {proactiveTip && (
+            <Card className="glass flex-1" size="small">
+              <div className="flex items-center gap-2">
+                <span className="text-base">💡</span>
+                <div>
+                  <div className="text-xs font-medium text-gray-700">智能建议</div>
+                  <div className="text-xs text-gray-500">{proactiveTip}</div>
+                </div>
+              </div>
+            </Card>
+          )}
+          {emotionTrend?.dominant_label && (
+            <Card className="glass flex-1" size="small">
+              <div className="flex items-center gap-2">
+                <span className="text-base">
+                  {emotionTrend.dominant_emotion === 'positive' ? '😊' :
+                   emotionTrend.dominant_emotion === 'negative' ? '😤' :
+                   emotionTrend.dominant_emotion === 'anxious' ? '😰' :
+                   emotionTrend.dominant_emotion === 'bored' ? '😑' : '😐'}
+                </span>
+                <div>
+                  <div className="text-xs font-medium text-gray-700">情绪状态</div>
+                  <div className="text-xs text-gray-500">
+                    {emotionTrend.dominant_label}
+                    {emotionTrend.trend && ` · ${emotionTrend.trend}`}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          )}
+        </div>
+      )}
 
       {/* 演化洞察 + 推荐 */}
       {!loading && (evoHighlights.length > 0 || recommendedTpl?.steps) && (

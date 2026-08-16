@@ -16,6 +16,11 @@ interface ChatMessage {
   content: string
   steps?: ChatStep[]
   timestamp: number
+  emotion?: string
+  emotionLabel?: string
+  source?: string
+  sourceLabel?: string
+  predictions?: any[]
 }
 
 interface ChatStep {
@@ -38,8 +43,20 @@ export default function Chat() {
   const [currentSteps, setCurrentSteps] = useState<ChatStep[]>([])
   const [showHistory, setShowHistory] = useState(false)
   const [createdTaskIds, setCreatedTaskIds] = useState<number[]>([])
+  const [emotionAlert, setEmotionAlert] = useState<string | null>(null)
+  const [proactiveTip, setProactiveTip] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
+
+  // 加载情绪预警和主动建议
+  useEffect(() => {
+    api.getEmotionAlert().then((r) => {
+      if (r.alert) setEmotionAlert(r.alert)
+    }).catch(() => {})
+    api.getProactiveSuggestion().then((r) => {
+      if (r.has_suggestion) setProactiveTip(r.suggestion)
+    }).catch(() => {})
+  }, [])
 
   // 加载历史记录
   useEffect(() => {
@@ -99,6 +116,11 @@ export default function Chat() {
       let buffer = ''
       const stepsData: ChatStep[] = []
       let lastStepOutput = ''  // 最后一步的输出作为最终回复
+      let currentEmotion: string | undefined
+      let currentEmotionLabel: string | undefined
+      let currentSource: string | undefined
+      let currentSourceLabel: string | undefined
+      let currentPredictions: any[] | undefined
 
       while (true) {
         const { done, value } = await reader.read()
@@ -147,8 +169,15 @@ export default function Chat() {
         content: finalContent,
         steps: stepsData.length > 0 ? stepsData : undefined,
         timestamp: Date.now(),
+        emotion: streamState.current.emotion,
+        emotionLabel: streamState.current.emotionLabel,
+        source: streamState.current.source,
+        sourceLabel: streamState.current.sourceLabel,
+        predictions: streamState.current.predictions,
       }
       setMessages((prev) => [...prev, aiMessage])
+      // 清除情绪预警
+      setEmotionAlert(null)
 
       // 提示查看创建的任务
       if (createdTaskIds.length > 0) {
@@ -170,6 +199,9 @@ export default function Chat() {
     setCurrentSteps([])
   }, [input, loading, configured])
 
+  // 使用 useRef 存储流式状态（避免闭包问题）
+  const streamState = useRef<any>({})
+
   function handleStreamEvent(type: string, data: any, stepsData: ChatStep[]) {
     switch (type) {
       case 'steps':
@@ -178,6 +210,11 @@ export default function Chat() {
           stepsData.push({ ...s, status: 'pending', output: '' })
         })
         setCurrentSteps([...stepsData])
+        // 保存来源信息
+        if (data.source) {
+          streamState.current.source = data.source
+          streamState.current.sourceLabel = data.source_label
+        }
         break
       case 'step_start':
         updateStep(stepsData, data.index, { status: 'running', output: '' })
@@ -190,6 +227,23 @@ export default function Chat() {
         break
       case 'done':
         stepsData.forEach((_, i) => updateStep(stepsData, i, { status: 'done' }))
+        break
+      // ── 记忆系统事件 ──
+      case 'emotion':
+        streamState.current.emotion = data.emotion
+        streamState.current.emotionLabel = data.label
+        break
+      case 'prediction':
+        streamState.current.predictions = data.predictions
+        break
+      case 'prospective':
+        message.info(data.message)
+        break
+      case 'event_triggered':
+        message.info(`⚡ ${data.message}`)
+        break
+      case 'reminder':
+        setProactiveTip(data.message)
         break
     }
   }
@@ -246,6 +300,28 @@ export default function Chat() {
           </Button>
         </Space>
       </div>
+
+      {/* 情绪预警 & 主动建议 */}
+      {(emotionAlert || proactiveTip) && (
+        <div className="px-6 pt-3 space-y-2">
+          {emotionAlert && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-orange-50 border border-orange-200 text-xs text-orange-700">
+              <span>⚠️</span>
+              <span>{emotionAlert}</span>
+              <button className="ml-auto text-orange-400 hover:text-orange-600"
+                onClick={() => setEmotionAlert(null)}>✕</button>
+            </div>
+          )}
+          {proactiveTip && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-50 border border-blue-200 text-xs text-blue-700">
+              <span>💡</span>
+              <span>{proactiveTip}</span>
+              <button className="ml-auto text-blue-400 hover:text-blue-600"
+                onClick={() => setProactiveTip(null)}>✕</button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 对话区域 */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
@@ -308,6 +384,29 @@ export default function Chat() {
                   </div>
                 )}
               </div>
+
+              {/* 记忆系统信息（情感/来源/预测） */}
+              {msg.role === 'assistant' && (msg.emotion || msg.source || msg.predictions?.length > 0) && (
+                <div className="flex items-center gap-1 mt-1 flex-wrap">
+                  {msg.emotionLabel && (
+                    <Tag className="text-[10px] py-0 px-1" color={
+                      msg.emotion === 'positive' ? 'green' :
+                      msg.emotion === 'negative' ? 'red' :
+                      msg.emotion === 'anxious' ? 'orange' : 'default'
+                    }>
+                      {msg.emotion === 'positive' ? '😊' : msg.emotion === 'negative' ? '😤' :
+                       msg.emotion === 'anxious' ? '😰' : msg.emotion === 'bored' ? '😑' : '😐'}
+                      {msg.emotionLabel}
+                    </Tag>
+                  )}
+                  {msg.sourceLabel && (
+                    <Tag className="text-[10px] py-0 px-1" color="purple">📐 {msg.sourceLabel}</Tag>
+                  )}
+                  {msg.predictions?.length > 0 && msg.predictions[0].action && (
+                    <Tag className="text-[10px] py-0 px-1" color="blue">💡 {msg.predictions[0].action.slice(0, 20)}</Tag>
+                  )}
+                </div>
+              )}
 
               {/* 时间和操作 */}
               <div className={`flex items-center gap-2 mt-1 text-[10px] text-gray-400 ${msg.role === 'user' ? 'justify-end' : ''}`}>

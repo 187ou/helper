@@ -11,6 +11,8 @@ const NAVS = [
   { key: 'evolution', icon: '🧬', label: '进化中心', path: '/evolution' },
   { key: 'templates', icon: '📐', label: '模板库', path: '/templates' },
   { key: 'toolbox', icon: '🧰', label: '工具库', path: '/toolbox' },
+  { key: 'memory', icon: '🧠', label: '记忆洞察', path: '/memory' },
+  { key: 'reminders', icon: '🔔', label: '智能提醒', path: '/reminders' },
   { key: 'kb', icon: '📚', label: '知识库', path: '/kb' },
   { key: 'schedule-settings', icon: '⏰', label: '定时配置', path: '/schedule-settings' },
   { key: 'settings', icon: '⚙️', label: '系统设置', path: '/settings' },

@@ -204,6 +204,55 @@ export const api = {
   restoreBackup: (data) => request('/system/restore', { method: 'POST', body: JSON.stringify(data) }),
   resetData: (target) => request(`/system/reset/${target}`, { method: 'DELETE' }),
 
+  // 记忆系统 - 健康 & 元记忆
+  getMemoryHealth: () => request('/metamemory/health'),
+  getMetamemoryList: (type = '') => request(`/metamemory/memories?memory_type=${type}`),
+  getMemoryReliability: (mtype, key) => request(`/metamemory/reliability?memory_type=${mtype}&memory_key=${encodeURIComponent(key)}`),
+  getMemoryConflicts: () => request('/metamemory/conflicts'),
+
+  // 记忆系统 - 情感
+  getEmotionTrend: (days = 7) => request(`/memory/emotion/trend?days=${days}`),
+  getEmotionAlert: () => request('/memory/emotion/alert'),
+  getEmotionGuidance: () => request('/memory/emotion/guidance'),
+
+  // 记忆系统 - 推理 & 预测
+  getPredictions: (text, type = '') => request(`/memory/predict?task_text=${encodeURIComponent(text)}&task_type=${type}`),
+  getProactiveSuggestion: () => request('/memory/proactive-suggestion'),
+
+  // 记忆系统 - 叙事 & 用户模型
+  getUserModel: () => request('/user-model/latest'),
+  buildUserModel: () => request('/user-model/build', { method: 'POST' }),
+  getPersonalizedGuidance: (type = '') => request(`/user-model/guidance?task_type=${type}`),
+  generateNarrative: (period = 'monthly') => request('/memory/narrative/generate', { method: 'POST', body: JSON.stringify({ period }) }),
+  getNarrative: (period = 'monthly') => request(`/memory/narrative/latest?period=${period}`),
+  getStory: () => request('/memory/narrative/story'),
+
+  // 记忆系统 - 关联
+  getRelatedMemories: (mtype, key, depth = 2) => request(`/user-model/memory/related?memory_type=${mtype}&memory_key=${encodeURIComponent(key)}&max_depth=${depth}`),
+
+  // 深度反思
+  generateDeepReflection: (period = 'weekly') => request('/user-model/reflection/deep', { method: 'POST', body: JSON.stringify({ period }) }),
+  getDeepReflection: (period = 'weekly') => request(`/user-model/reflection/latest?period=${period}`),
+
+  // 记忆巩固
+  runConsolidation: (days = 1) => request('/consolidation/run', { method: 'POST', body: JSON.stringify({ days }) }),
+  getInsights: () => request('/consolidation/insights'),
+
+  // 反馈学习
+  submitFeedback: (data) => request('/feedback/submit', { method: 'POST', body: JSON.stringify(data) }),
+  getFeedbackList: (taskId = 0) => request(`/feedback/list?task_id=${taskId}`),
+  getPreferences: () => request('/feedback/preferences'),
+  getPreferenceSummary: () => request('/feedback/preferences/summary'),
+
+  // 前瞻记忆
+  parseIntent: (text) => request('/prospective/parse', { method: 'POST', body: JSON.stringify({ text }) }),
+  createReminder: (data) => request('/prospective/create', { method: 'POST', body: JSON.stringify(data) }),
+  getDueReminders: () => request('/prospective/due'),
+  listReminders: (status = 'pending') => request(`/prospective/list?status=${status}`),
+  completeReminder: (id) => request(`/prospective/${id}/complete`, { method: 'POST' }),
+  dismissReminder: (id) => request(`/prospective/${id}/dismiss`, { method: 'POST' }),
+  deleteReminder: (id) => request(`/prospective/${id}`, { method: 'DELETE' }),
+
   // 工具库
   getToolList: () => request('/tool/list'),
   generateTool: (desc) => request('/tool/generate', { method: 'POST', body: JSON.stringify({ description: desc }) }),

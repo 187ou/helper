@@ -231,6 +231,32 @@ def _transfer_weight(source_type: str, changes: dict[str, float]) -> None:
             pass
 
 
+def extract_primary_habit_key(task_text: str, task_type: str = "") -> str:
+    """提取任务的主习惯 key。
+
+    必须与 evolve_from_task 的取键逻辑一致，否则模板固化查 user_habit_weight
+    时会因 key 不匹配而永远查不到频次。
+    """
+    if not task_text or not task_text.strip():
+        return "unknown"
+
+    if not task_type:
+        from agent_core.task_parser import detect_task_type
+        task_type = detect_task_type(task_text).value
+
+    keys = _extract_habit_keys(task_text, task_type)
+    if keys:
+        return keys[0]
+    # 未命中预设模式时，兜底扫描全部类型（work/life/health 关键词可能跨类型）
+    for other_type in _HABIT_PATTERNS:
+        if other_type == task_type:
+            continue
+        keys = _extract_habit_keys(task_text, other_type)
+        if keys:
+            return keys[0]
+    return _extract_generic_key(task_text)
+
+
 def _extract_habit_keys(task_text: str, task_type: str) -> list[str]:
     """从任务文本提取习惯关键词。"""
     if not task_text:

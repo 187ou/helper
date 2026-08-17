@@ -88,7 +88,7 @@ def parse_with_source(task_text: str) -> tuple[list[TaskStep], dict[str, Any]]:
     # ── 优先级 1：演化引擎推荐（模板 > 模式 > 默认） ──
     recommended = _try_recommend_steps(task_text)
     if recommended:
-        raw_steps, source = recommended
+        raw_steps, source, template_name = recommended
         steps = [
             TaskStep(
                 index=i,
@@ -104,12 +104,12 @@ def parse_with_source(task_text: str) -> tuple[list[TaskStep], dict[str, Any]]:
         source_info = {
             "source": source,
             "source_label": _get_source_label(source),
-            "template_name": _extract_template_name(raw_steps, source),
+            "template_name": template_name,
         }
 
         # 如果是模板命中，附加程序性记忆（决策规则/成功经验）
         if source == "template":
-            procedural = _get_procedural_memory(source_info.get("template_name", ""))
+            procedural = _get_procedural_memory(template_name)
             if procedural:
                 source_info["procedural_memory"] = procedural
 
@@ -137,13 +137,6 @@ def _get_source_label(source: str) -> str:
     return labels.get(source, "未知来源")
 
 
-def _extract_template_name(raw_steps: list[dict], source: str) -> str:
-    """从命中的模板提取名称（用于前端展示）。"""
-    if source == "template" and raw_steps:
-        return raw_steps[0].get("name", "默认模板")[:20]
-    return ""
-
-
 def _get_procedural_memory(habit_key: str) -> dict | None:
     """获取模板的程序性记忆（决策规则+成功经验+常见错误）。"""
     if not habit_key:
@@ -168,11 +161,12 @@ def _get_procedural_memory(habit_key: str) -> dict | None:
         return None
 
 
-def _try_recommend_steps(task_text: str) -> tuple[list[dict], str] | None:
+def _try_recommend_steps(task_text: str) -> tuple[list[dict], str, str] | None:
     """尝试从演化引擎获取推荐步骤。
 
     Returns:
-        (steps, source) 命中时返回，source 为 "template" / "pattern" / "default"
+        (steps, source, template_name) 命中时返回，
+        source 为 "template" / "pattern" / "default"；template_name 仅模板命中时非空
         None 表示无命中，需回退到 LLM
     """
     task_type = detect_task_type(task_text).value
@@ -187,7 +181,7 @@ def _try_recommend_steps(task_text: str) -> tuple[list[dict], str] | None:
                 tpl_steps = tpl.get("steps", [])
                 if tpl_steps:
                     logger.info("固化模板命中: %s", name)
-                    return tpl_steps, "template"
+                    return tpl_steps, "template", name
     except Exception as e:
         logger.debug("模板匹配失败: %s", e)
 
@@ -197,7 +191,7 @@ def _try_recommend_steps(task_text: str) -> tuple[list[dict], str] | None:
         pattern_steps = recommend_steps(task_text, task_type)
         if pattern_steps:
             # 标准化：pattern_miner 返回 list[str]，转为统一 list[dict]
-            return _normalize_steps(pattern_steps), "pattern"
+            return _normalize_steps(pattern_steps), "pattern", ""
     except Exception as e:
         logger.debug("模式推荐失败: %s", e)
 
@@ -206,7 +200,7 @@ def _try_recommend_steps(task_text: str) -> tuple[list[dict], str] | None:
         from evolution_core.cold_start import get_default_template
         default_steps = get_default_template(task_text)
         if default_steps:
-            return _normalize_steps(default_steps), "default"
+            return _normalize_steps(default_steps), "default", ""
     except Exception as e:
         logger.debug("默认模板匹配失败: %s", e)
 

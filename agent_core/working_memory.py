@@ -17,15 +17,23 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _step_name(step: Any, index: int) -> str:
+    """取步骤名，兼容 TaskStep 对象与 dict 两种形态。"""
+    if isinstance(step, dict):
+        return step.get("name") or f"步骤{index}"
+    return getattr(step, "name", None) or f"步骤{index}"
+
+
 class WorkingMemory:
     """单任务的工作记忆（任务执行期间维护）。"""
 
-    def __init__(self, task_id: int, task_text: str, steps: list[dict]):
+    def __init__(self, task_id: int, task_text: str, steps: list):
         self.task_id = task_id
         self.task_text = task_text
         self.task_goal = ""  # 任务目标（拆解后生成）
         self.completed_summary = ""  # 已完成部分的语义摘要
-        self.remaining_steps = [s.get("name", f"步骤{i}") for i, s in enumerate(steps)]
+        # steps 有两种来源：执行时传 TaskStep 对象，续跑时从 JSON 恢复传 dict
+        self.remaining_steps = [_step_name(s, i) for i, s in enumerate(steps)]
         self.completed_steps: list[str] = []
         self.key_decisions: list[dict[str, str]] = []  # [{"step": "name", "decision": "xxx"}]
         self.related_preferences: list[str] = []  # 本任务涉及的偏好

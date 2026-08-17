@@ -1,10 +1,11 @@
 """任务调度：串联 parser → builder → graph.execute，含演化打分。"""
 import logging
 import time
+from datetime import datetime
 from typing import Any, Generator
 
 from core.context import new_task_id, set_task_id
-from agent_core.task_parser import parse, detect_task_type
+from agent_core.task_parser import parse, parse_with_source, detect_task_type
 from agent_core.graph_builder import build_graph, build_dag
 from evolution_core.judge_score import score_work, score_life, combined_score
 from memory_store.sqlite_db import now_str
@@ -175,17 +176,29 @@ def run_stream(task_text: str, task_id: int | None = None,
         resume_from: 从哪个步骤索引开始续跑（跳过之前成功的步骤）
     """
     # ── 任务初始化 ──
-    if task_id is None:
-        task_id = new_task_id()
-    set_task_id(task_id)
+    # trace_id 用于日志串联（hex 短码），db_id 是 task_list 表的整数主键。
+    # 两者不可混用：用 hex 串去 UPDATE ... WHERE id = ? 会静默匹配 0 行。
+    set_task_id(new_task_id())
     is_resume = resume_from is not None
+    db_id = task_id
 
     # 1. 拆解（带来源信息）
     steps, source_info = parse_with_source(task_text)
+
+    # 续跑复用已有记录；新任务先建表拿到真实主键，后续落库/前端回传都用它
+    if db_id is None:
+        created = create_task(
+            content=task_text,
+            task_type=detect_task_type(task_text).value,
+            steps=[{"index": s.index, "name": s.name, "desc": s.description, "type": s.step_type} for s in steps],
+            source="ai",
+        )
+        db_id = created["id"]
+
     yield {
         "type": "steps",
         "data": {
-            "task_id": task_id,
+            "task_id": db_id,
             "is_resume": is_resume,
             "source": source_info.get("source", "llm"),
             "source_label": source_info.get("source_label", "AI 智能拆解"),
@@ -206,7 +219,7 @@ def run_stream(task_text: str, task_id: int | None = None,
     # 情感检测
     try:
         from agent_core.emotional_memory import record_emotion
-        emotion = record_emotion(task_id, text, source="user_input")
+        emotion = record_emotion(db_id, task_text, source="user_input")
         if emotion and emotion.get("emotion") != "neutral":
             yield {"type": "emotion", "data": {"emotion": emotion["emotion"], "label": emotion["emotion_label"]}}
     except Exception:
@@ -228,8 +241,8 @@ def run_stream(task_text: str, task_id: int | None = None,
     if is_resume:
         try:
             from service.task_service import get_task, get_dag
-            existing_task = get_task(task_id)
-            existing_dag = get_dag(task_id) if existing_task else None
+            existing_task = get_task(db_id)
+            existing_dag = get_dag(db_id) if existing_task else None
             if existing_dag:
                 for node in existing_dag.get("nodes", []):
                     node_states[node["id"]] = node.get("status", "pending")
@@ -237,14 +250,14 @@ def run_stream(task_text: str, task_id: int | None = None,
                 # 恢复已完成步骤的结果到 step_results（关键修复）
                 restored_count = _restore_completed_results(existing_task, existing_dag, step_results)
                 logger.info("断点续跑: 任务 #%d，从步骤 %d 继续，恢复 %d 步结果",
-                            task_id, resume_from, restored_count)
+                            db_id, resume_from, restored_count)
                 yield {"type": "log", "data": {"message": f"断点续跑：从步骤 {resume_from + 1} 继续（已恢复 {restored_count} 步结果）"}}
 
             # 恢复工作记忆（断点续跑时恢复上下文）
             from agent_core.working_memory import restore_working_memory_from_task
-            wm = restore_working_memory_from_task(task_id)
+            wm = restore_working_memory_from_task(db_id)
             if wm:
-                logger.info("工作记忆已恢复: task #%d（目标: %s）", task_id, wm.task_goal[:50])
+                logger.info("工作记忆已恢复: task #%d（目标: %s）", db_id, wm.task_goal[:50])
         except Exception as e:
             logger.warning("恢复状态失败，从头执行: %s", e)
             is_resume = False
@@ -252,7 +265,7 @@ def run_stream(task_text: str, task_id: int | None = None,
 
     # 2. 初始化工作记忆
     from agent_core.working_memory import get_working_memory
-    wm = get_working_memory(task_id, task_text, steps)
+    wm = get_working_memory(db_id, task_text, steps)
     # 从拆解结果推断任务目标
     if steps:
         wm.update_goal(f"{task_text}（{len(steps)} 步）")
@@ -331,73 +344,60 @@ def run_stream(task_text: str, task_id: int | None = None,
     yield {"type": "done", "data": {"cost_time": cost_time, "status": final_status,
                                     "success_steps": success_steps, "failed_steps": failed_steps}}
 
-    # ── 持久化任务 + DAG + 状态流转 ──
+    # ── 持久化 DAG + 状态流转（任务记录已在开头创建） ──
     try:
-        from service.task_service import create_task, save_dag, update_task, get_task
-        task_type = detect_task_type(task_text)
+        # 使用共享 build_dag 生成正确的并行边，注入节点状态与真实执行产出
+        results_by_index = {r["index"]: r.get("result", "") for r in step_results if "index" in r}
+        step_dicts = [
+            {
+                "index": s.index,
+                "name": s.name,
+                "description": s.description,
+                "step_type": s.step_type,
+                "status": node_states.get(f"step_{s.index}", "pending"),
+                # 存真实产出而非步骤描述，续跑时后续节点才能拿到有效上下文
+                "result": results_by_index.get(s.index, "")[:2000],
+            }
+            for s in steps
+        ]
+        dag = build_dag(step_dicts)
+        save_dag(db_id, dag)
 
-        # 如果是续跑，获取已有任务；否则新建
-        existing = get_task(task_id) if is_resume else None
-        if existing:
-            task = existing
-        else:
-            task = create_task(
-                content=task_text,
-                task_type=task_type.value,
-                steps=[{"index": s.index, "name": s.name, "desc": s.description, "type": s.step_type} for s in steps],
-                source="ai",
+        # 更新任务状态
+        update_task(db_id, status=final_status)
+        logger.info("任务 #%d 已持久化，状态 → %s，DAG 节点 %d 个",
+                    db_id, final_status, len(dag["nodes"]))
+
+        # ── 任务完成后处理（归档 + 索引） ──
+        if final_status == TaskStatus.DONE.value:
+            avg_score = _calc_avg_step_score(step_results) if step_results else 0
+
+            # 产出归档到知识库
+            if step_results:
+                _archive_task_results(task_text, step_results, score=avg_score, task_id=db_id)
+
+            # 工作记忆归档
+            from agent_core.working_memory import archive_working_memory_to_episodic
+            archive_working_memory_to_episodic(db_id)
+
+            # 添加到语义索引（情景记忆语义化）
+            from memory_store.episodic_index import add_task_to_index
+            add_task_to_index(
+                task_id=db_id,
+                task_text=task_text,
+                task_type=detect_task_type(task_text).value,
+                score=avg_score,
             )
 
-        if task:
-            # 使用共享 build_dag 生成正确的并行边，注入节点状态
-            step_dicts = [
-                {
-                    "index": s.index,
-                    "name": s.name,
-                    "description": s.description,
-                    "step_type": s.step_type,
-                    "status": node_states.get(f"step_{s.index}", "pending"),
-                }
-                for s in steps
-            ]
-            dag = build_dag(step_dicts)
-            save_dag(task_id, dag)
+            # 自动创建记忆关联
+            from agent_core.memory_graph import auto_discover_links
+            auto_discover_links(task_text, detect_task_type(task_text).value, db_id)
 
-            # 更新任务状态
-            update_task(task_id, status=final_status)
-            logger.info("任务 #%d 已持久化，状态 → %s，DAG 节点 %d 个",
-                        task_id, final_status, len(dag["nodes"]))
-
-            # ── 任务完成后处理（归档 + 索引） ──
-            if final_status == TaskStatus.DONE.value:
-                avg_score = _calc_avg_step_score(step_results) if step_results else 0
-
-                # 产出归档到知识库
-                if step_results:
-                    _archive_task_results(task_text, step_results, score=avg_score, task_id=task_id)
-
-                # 工作记忆归档
-                from agent_core.working_memory import archive_working_memory_to_episodic
-                archive_working_memory_to_episodic(task_id)
-
-                # 添加到语义索引（情景记忆语义化）
-                from memory_store.episodic_index import add_task_to_index
-                add_task_to_index(
-                    task_id=task_id,
-                    task_text=task_text,
-                    task_type=detect_task_type(task_text).value,
-                    score=avg_score,
-                )
-
-                # 自动创建记忆关联
-                from agent_core.memory_graph import auto_discover_links
-                auto_discover_links(task_text, detect_task_type(task_text).value, task_id)
-
-                # 事件触发检测（任务完成时检查是否有事件匹配）
-                from agent_core.prospective_memory import _check_event_triggers
-                event_due = _check_event_triggers(task_text, datetime.now())
-                for e in event_due:
-                    yield {"type": "event_triggered", "data": {"message": f"事件触发: {e.get('user_intent', '')[:50]}", "reminder": e}}
+            # 事件触发检测（任务完成时检查是否有事件匹配）
+            from agent_core.prospective_memory import _check_event_triggers
+            event_due = _check_event_triggers(task_text, datetime.now())
+            for e in event_due:
+                yield {"type": "event_triggered", "data": {"message": f"事件触发: {e.get('user_intent', '')[:50]}", "reminder": e}}
     except Exception as e:
         logger.warning("持久化任务失败: %s", e)
 
@@ -427,27 +427,27 @@ def _restore_completed_results(existing_task: dict | None, existing_dag: dict | 
         else:
             task_steps = task_steps_raw or []
 
-        # 从 DAG 获取节点状态
-        nodes = existing_dag.get("nodes", [])
-        completed_node_ids = {
-            n["id"] for n in nodes
+        # 从 DAG 获取成功节点（含持久化的执行产出）
+        completed_nodes = {
+            n["id"]: n for n in existing_dag.get("nodes", [])
             if n.get("status") == "success"
         }
 
         # 恢复已完成步骤的结果
         for step_def in task_steps:
             step_index = step_def.get("index", -1)
-            node_id = f"step_{step_index}"
-            if node_id in completed_node_ids:
-                # 构造结果（使用步骤描述作为结果摘要）
-                result_text = step_def.get("description", step_def.get("desc", ""))
-                if result_text:
-                    step_results.append({
-                        "index": step_index,
-                        "name": step_def.get("name", f"步骤{step_index}"),
-                        "result": result_text[:500],  # 截断避免上下文过长
-                    })
-                    restored += 1
+            node = completed_nodes.get(f"step_{step_index}")
+            if not node:
+                continue
+            # 优先用持久化的真实产出；旧数据无 result 字段时降级到步骤描述
+            result_text = node.get("result") or step_def.get("description", step_def.get("desc", ""))
+            if result_text:
+                step_results.append({
+                    "index": step_index,
+                    "name": step_def.get("name", f"步骤{step_index}"),
+                    "result": result_text[:2000],
+                })
+                restored += 1
     except Exception as e:
         logger.debug("恢复已完成结果失败: %s", e)
 

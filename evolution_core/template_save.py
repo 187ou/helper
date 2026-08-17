@@ -25,58 +25,52 @@ def check_and_save_template(task_text: str, steps: list[dict]) -> dict[str, Any]
     1. 频次 >= MIN_TEMPLATE_FREQ（默认 5 次）
     2. 历史平均得分 >= MIN_AVG_SCORE（默认 70 分）
     """
-    # 提取习惯关键词
-    from evolution_core.weight_evolve import _extract_habit_key
-    habit_key = _extract_habit_key(task_text)
-
-    # 检查频次
-    conn = get_conn()
-    habit = conn.execute(
-        "SELECT * FROM user_habit_weight WHERE habit_key = ?", (habit_key,)
-    ).fetchone()
-
-    if not habit or habit["freq_count"] < MIN_TEMPLATE_FREQ:
-        conn.close()
-        return None  # 频次不够，不固化
-
-    # 检查平均得分（从历史任务计算）
-    avg_score = _calc_habit_avg_score(conn, habit_key)
-    conn.close()
-
-    if avg_score < MIN_AVG_SCORE:
-        logger.debug("模板固化跳过 %s: 平均分 %.1f < %.1f", habit_key, avg_score, MIN_AVG_SCORE)
-        return None  # 质量不达标，不固化
-
-    # 检查是否已有同名模板
-    conn = get_conn()
-    existing = conn.execute(
-        "SELECT id FROM custom_template WHERE name = ?", (habit_key,)
-    ).fetchone()
-
-    if existing:
-        conn.close()
-        logger.info("模板已存在: %s", habit_key)
+    if not steps:
         return None
 
-    # 固化模板（含程序性记忆：决策规则 + 成功经验）
-    flow = {
-        "source_task": task_text,
-        "habit_key": habit_key,
-        "freq_count": habit["freq_count"],
-        "avg_score": round(avg_score, 1),
-        "steps": steps,
-        # ── 程序性记忆新增 ──
-        "decision_rules": _extract_decision_rules(conn, habit_key),
-        "success_patterns": _extract_success_patterns(conn, habit_key),
-        "common_mistakes": _extract_common_mistakes(conn, habit_key),
-    }
+    # 提取习惯关键词（与权重迭代共用同一套取键逻辑，保证能查到频次）
+    from evolution_core.weight_evolve import extract_primary_habit_key
+    habit_key = extract_primary_habit_key(task_text)
+
     conn = get_conn()
-    conn.execute(
-        "INSERT INTO custom_template (name, task_flow_json) VALUES (?, ?)",
-        (habit_key, json.dumps(flow, ensure_ascii=False)),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        # 1. 频次门槛
+        habit = conn.execute(
+            "SELECT * FROM user_habit_weight WHERE habit_key = ?", (habit_key,)
+        ).fetchone()
+        if not habit or habit["freq_count"] < MIN_TEMPLATE_FREQ:
+            return None
+
+        # 2. 质量门槛
+        avg_score = _calc_habit_avg_score(conn, habit_key)
+        if avg_score < MIN_AVG_SCORE:
+            logger.debug("模板固化跳过 %s: 平均分 %.1f < %.1f", habit_key, avg_score, MIN_AVG_SCORE)
+            return None
+
+        # 3. 去重
+        if conn.execute("SELECT id FROM custom_template WHERE name = ?", (habit_key,)).fetchone():
+            logger.info("模板已存在: %s", habit_key)
+            return None
+
+        # 4. 固化（含程序性记忆：决策规则 + 成功经验 + 常见错误）
+        flow = {
+            "source_task": task_text,
+            "habit_key": habit_key,
+            "freq_count": habit["freq_count"],
+            "avg_score": round(avg_score, 1),
+            "steps": steps,
+            "decision_rules": _extract_decision_rules(conn, habit_key),
+            "success_patterns": _extract_success_patterns(conn, habit_key),
+            "common_mistakes": _extract_common_mistakes(conn, habit_key),
+        }
+        conn.execute(
+            "INSERT INTO custom_template (name, task_flow_json) VALUES (?, ?)",
+            (habit_key, json.dumps(flow, ensure_ascii=False)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
     logger.info("固化模板: %s (频次 %d, 均分 %.1f, %d 条规则)",
                 habit_key, habit["freq_count"], avg_score, len(flow["decision_rules"]))
     return {"name": habit_key, "freq": habit["freq_count"], "avg_score": round(avg_score, 1)}

@@ -34,13 +34,17 @@ def build_dag(steps: list[dict]) -> dict[str, Any]:
     edges: list[dict[str, str]] = []
 
     for step in steps:
-        nodes.append({
+        node = {
             "id": f"step_{step['index']}",
             "label": step.get("name", f"步骤{step['index']}"),
             "desc": step.get("description", step.get("desc", "")),
             "status": step.get("status", "pending"),
             "step_type": step.get("step_type", step.get("type", "action")),
-        })
+        }
+        # 执行产出（仅执行过的节点有），断点续跑靠它恢复上下文
+        if step.get("result"):
+            node["result"] = step["result"]
+        nodes.append(node)
 
     # 边生成：分组处理，parallel 组 fan-out/fan-in
     prev_sources: list[str] = []  # 上一组发出连接的节点 id 列表

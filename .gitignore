@@ -33,3 +33,4 @@ Thumbs.db
 # ── PyInstaller ──
 *.manifest
 *.toc
+/INTERVIEW.md
